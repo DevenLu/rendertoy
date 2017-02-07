@@ -49,6 +49,10 @@ struct ParamAnnotation
 	bool has(const std::string& value) const {
 		return items.find(value) != items.end();
 	}
+
+	bool empty() const {
+		return items.empty();
+	}
 };
 
 enum class ShaderParamType {

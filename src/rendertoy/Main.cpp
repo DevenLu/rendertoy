@@ -27,8 +27,8 @@
 
 using JsonWriter = rapidjson::PrettyWriter<rapidjson::StringBuffer>;
 
-struct IRenderPass;
-std::shared_ptr<IRenderPass> g_editedPass = nullptr;
+struct RenderPass;
+std::shared_ptr<RenderPass> g_editedPass = nullptr;
 
 
 
@@ -179,25 +179,356 @@ struct PassCompilerSettings
 	ivec2 windowSize;
 };
 
-struct IRenderPass
+struct DeserializationContext
 {
-	virtual ~IRenderPass() {}
+	std::unordered_map<int, nodegraph::node_handle> nodeMap;
+	std::unordered_map<u32, u32> uidMap;
+};
+
+const char* const getShaderParamTypeName(ShaderParamType type)
+{
+	switch (type) {
+	case ShaderParamType::Float: return "Float";
+	case ShaderParamType::Float2: return "Float2";
+	case ShaderParamType::Float3: return "Float3";
+	case ShaderParamType::Float4: return "Float4";
+	case ShaderParamType::Int: return "Int";
+	case ShaderParamType::Int2: return "Int2";
+	case ShaderParamType::Int3: return "Int3";
+	case ShaderParamType::Int4: return "Int4";
+	case ShaderParamType::Sampler2d: return "Sampler2d";
+	case ShaderParamType::Image2d: return "Image2d";
+	}
+
+	return "Unknown";
+}
+
+ShaderParamType parseShaderParamTypeName(const char* const str)
+{
+	if (0 == strcmp("Float", str)) return ShaderParamType::Float;
+	if (0 == strcmp("Float2", str)) return ShaderParamType::Float2;
+	if (0 == strcmp("Float3", str)) return ShaderParamType::Float3;
+	if (0 == strcmp("Float4", str)) return ShaderParamType::Float4;
+	if (0 == strcmp("Int", str)) return ShaderParamType::Int;
+	if (0 == strcmp("Int2", str)) return ShaderParamType::Int2;
+	if (0 == strcmp("Int3", str)) return ShaderParamType::Int3;
+	if (0 == strcmp("Int4", str)) return ShaderParamType::Int4;
+	if (0 == strcmp("Sampler2d", str)) return ShaderParamType::Sampler2d;
+	if (0 == strcmp("Image2d", str)) return ShaderParamType::Image2d;
+	return ShaderParamType::Unknown;
+}
+
+void serializeShaderParamRefl(const ShaderParamRefl& refl, JsonWriter& writer)
+{
+	writer.String("name");
+	writer.String(refl.name.c_str());
+
+	writer.String("type");
+	writer.String(getShaderParamTypeName(refl.type));
+
+	if (!refl.annotation.empty()) {
+		writer.String("annotation");
+		writer.StartObject();
+		for (auto& annot : refl.annotation.items) {
+			writer.String(annot.first.c_str());
+			writer.String(annot.second.c_str());
+		}
+		writer.EndObject();
+	}
+}
+
+void writeVec(JsonWriter& writer, const vec2& v) {
+	writer.StartArray();
+	writer.Double(v.x);
+	writer.Double(v.y);
+	writer.EndArray();
+}
+
+void writeVec(JsonWriter& writer, const vec3& v) {
+	writer.StartArray();
+	writer.Double(v.x);
+	writer.Double(v.y);
+	writer.Double(v.z);
+	writer.EndArray();
+}
+
+void writeVec(JsonWriter& writer, const vec4& v) {
+	writer.StartArray();
+	writer.Double(v.x);
+	writer.Double(v.y);
+	writer.Double(v.z);
+	writer.Double(v.w);
+	writer.EndArray();
+}
+
+void writeVec(JsonWriter& writer, const ivec2& v) {
+	writer.StartArray();
+	writer.Int(v.x);
+	writer.Int(v.y);
+	writer.EndArray();
+}
+
+void writeVec(JsonWriter& writer, const ivec3& v) {
+	writer.StartArray();
+	writer.Int(v.x);
+	writer.Int(v.y);
+	writer.Int(v.z);
+	writer.EndArray();
+}
+
+void writeVec(JsonWriter& writer, const ivec4& v) {
+	writer.StartArray();
+	writer.Int(v.x);
+	writer.Int(v.y);
+	writer.Int(v.z);
+	writer.Int(v.w);
+	writer.EndArray();
+}
+
+void readVec(rapidjson::Value& json, vec2 *const result)
+{
+	auto& v = json.GetArray();
+	*result = vec2(v[0].GetFloat(), v[1].GetFloat());
+}
+
+void readVec(rapidjson::Value& json, vec3 *const result)
+{
+	auto& v = json.GetArray();
+	*result = vec3(v[0].GetFloat(), v[1].GetFloat(), v[2].GetFloat());
+}
+
+void readVec(rapidjson::Value& json, vec4 *const result)
+{
+	auto& v = json.GetArray();
+	*result = vec4(v[0].GetFloat(), v[1].GetFloat(), v[2].GetFloat(), v[3].GetFloat());
+}
+
+void readVec(rapidjson::Value& json, ivec2 *const result)
+{
+	auto& v = json.GetArray();
+	*result = ivec2(v[0].GetInt(), v[1].GetInt());
+}
+
+void readVec(rapidjson::Value& json, ivec3 *const result)
+{
+	auto& v = json.GetArray();
+	*result = ivec3(v[0].GetInt(), v[1].GetInt(), v[2].GetInt());
+}
+
+void readVec(rapidjson::Value& json, ivec4 *const result)
+{
+	auto& v = json.GetArray();
+	*result = ivec4(v[0].GetInt(), v[1].GetInt(), v[2].GetInt(), v[3].GetInt());
+}
+
+
+void serializeShaderParamValue(const ShaderParamValue& value, const ShaderParamRefl& refl, JsonWriter& writer)
+{
+	if (refl.type == ShaderParamType::Float) {
+		writer.Double(value.floatValue);
+	}
+	else if (refl.type == ShaderParamType::Float2) {
+		writeVec(writer, value.float2Value);
+	}
+	else if (refl.type == ShaderParamType::Float3) {
+		writeVec(writer, value.float3Value);
+	}
+	else if (refl.type == ShaderParamType::Float4) {
+		writeVec(writer, value.float4Value);
+	}
+	else if (refl.type == ShaderParamType::Int) {
+		writer.Int(value.intValue);
+	}
+	else if (refl.type == ShaderParamType::Int2) {
+		writeVec(writer, value.int2Value);
+	}
+	else if (refl.type == ShaderParamType::Int3) {
+		writeVec(writer, value.int3Value);
+	}
+	else if (refl.type == ShaderParamType::Int4) {
+		writeVec(writer, value.int4Value);
+	}
+	else if (refl.type == ShaderParamType::Image2d || refl.type == ShaderParamType::Sampler2d) {
+		writer.StartObject();
+		{
+			writer.String("source");
+
+			switch (value.textureValue.source) {
+			case TextureDesc::Source::Load: {
+				writer.String("Load");
+
+				writer.String("path");
+				writer.String(value.textureValue.path.c_str());
+				break;
+			}
+
+			case TextureDesc::Source::Create: {
+				writer.String("Create");
+
+				writer.String("useRelativeScale");
+				writer.Bool(value.textureValue.useRelativeScale);
+
+				if (value.textureValue.useRelativeScale) {
+					writer.String("scaleRelativeTo");
+					writer.String(value.textureValue.scaleRelativeTo.c_str());
+
+					writer.String("relativeScale");
+					writeVec(writer, value.textureValue.relativeScale);
+				}
+				else {
+					writer.String("resolution");
+					writeVec(writer, value.textureValue.resolution);
+				}
+
+				break;
+			}
+
+			case TextureDesc::Source::Input: {
+				writer.String("Input");
+				break;
+			}
+			}
+
+			if (refl.type == ShaderParamType::Sampler2d)
+			{
+				writer.String("wrapS");
+				writer.Bool(value.textureValue.wrapS);
+
+				writer.String("wrapT");
+				writer.Bool(value.textureValue.wrapT);
+			}
+		}
+		writer.EndObject();
+	}
+	else {
+		assert(false);
+		writer.StartObject();
+		writer.EndObject();
+	}
+}
+
+void deserializeShaderParamRefl(rapidjson::Value& json, ShaderParamRefl *const refl)
+{
+	refl->name = json["name"].GetString();
+	refl->type = parseShaderParamTypeName(json["type"].GetString());
+	assert(refl->type != ShaderParamType::Unknown);
+	// TODO(?): annotation
+}
+
+void deserializeShaderParamValue(rapidjson::Value& json, const ShaderParamRefl& refl, ShaderParamValue *const value)
+{
+	if (refl.type == ShaderParamType::Float) {
+		value->floatValue = json.GetFloat();
+	}
+	else if (refl.type == ShaderParamType::Float2) {
+		auto& v = json.GetArray();
+		value->float2Value = vec2(v[0].GetFloat(), v[1].GetFloat());
+	}
+	else if (refl.type == ShaderParamType::Float3) {
+		auto& v = json.GetArray();
+		value->float3Value = vec3(v[0].GetFloat(), v[1].GetFloat(), v[2].GetFloat());
+	}
+	else if (refl.type == ShaderParamType::Float4) {
+		auto& v = json.GetArray();
+		value->float4Value = vec4(v[0].GetFloat(), v[1].GetFloat(), v[2].GetFloat(), v[3].GetFloat());
+	}
+	else if (refl.type == ShaderParamType::Int) {
+		value->intValue = json.GetInt();
+	}
+	else if (refl.type == ShaderParamType::Int2) {
+		auto& v = json.GetArray();
+		value->int2Value = ivec2(v[0].GetInt(), v[1].GetInt());
+	}
+	else if (refl.type == ShaderParamType::Int3) {
+		auto& v = json.GetArray();
+		value->int3Value = ivec3(v[0].GetInt(), v[1].GetInt(), v[2].GetInt());
+	}
+	else if (refl.type == ShaderParamType::Int4) {
+		auto& v = json.GetArray();
+		value->int4Value = ivec4(v[0].GetInt(), v[1].GetInt(), v[2].GetInt(), v[3].GetInt());
+	}
+	else if (refl.type == ShaderParamType::Image2d || refl.type == ShaderParamType::Sampler2d) {
+		value->textureValue.source = TextureDesc::Source::Input;
+		if (0 == strcmp("Load", json["source"].GetString())) value->textureValue.source = TextureDesc::Source::Load;
+		else if (0 == strcmp("Create", json["source"].GetString())) value->textureValue.source = TextureDesc::Source::Create;
+
+		switch (value->textureValue.source) {
+		case TextureDesc::Source::Load: {
+			value->textureValue.path = json["path"].GetString();
+			break;
+		}
+
+		case TextureDesc::Source::Create: {
+			if (true == (value->textureValue.useRelativeScale = json["useRelativeScale"].GetBool())) {
+				value->textureValue.scaleRelativeTo = json["scaleRelativeTo"].GetString();
+				readVec(json["relativeScale"], &value->textureValue.relativeScale);
+			}
+			else {
+				readVec(json["resolution"], &value->textureValue.resolution);
+			}
+
+			break;
+		}
+
+		case TextureDesc::Source::Input: {
+			break;
+		}
+		}
+
+		if (refl.type == ShaderParamType::Sampler2d)
+		{
+			value->textureValue.wrapS = json["wrapS"].GetBool();
+			value->textureValue.wrapT = json["wrapT"].GetBool();
+		}
+	}
+}
+
+
+struct RenderPass
+{
+	virtual ~RenderPass() {}
 	virtual ShaderParamIterProxy params() = 0;
 	virtual bool compile(const PassCompilerSettings& settings, CompiledPass *const compiled) = 0;
 	virtual int findParamByPortUid(nodegraph::port_uid uid) const = 0;
 	virtual std::string getDisplayName() const = 0;
 	virtual bool canBeRemoved() const = 0;
 	virtual void serialize(JsonWriter& writer) = 0;
-	virtual void deserialize(rapidjson::Value& json) = 0;
+	virtual void deserialize(rapidjson::Value& json, DeserializationContext& ctx) = 0;
+	virtual void findInvalidParamNameByUid(nodegraph::port_uid uid, std::string *const name) {}
 
 	static u32 nextParamUid() {
 		static u32 i = 0;
 		return ++i;
 	}
+
+protected:
+	void serializeParams(JsonWriter& writer)
+	{
+		auto serializeParam = [&writer](const ShaderParamProxy& param) {
+			writer.StartObject();
+			{
+				writer.String("refl");
+				writer.StartObject();
+				serializeShaderParamRefl(param.refl, writer);
+				writer.EndObject();
+
+				writer.String("value");
+				serializeShaderParamValue(param.value, param.refl, writer);
+
+				writer.String("uid");
+				writer.Int(param.uid);
+			}
+			writer.EndObject();
+		};
+
+		for (const auto& param : params()) {
+			serializeParam(param);
+		}
+	}
 };
 
 // Create or load the image
-bool compileImage(const PassCompilerSettings& settings, IRenderPass& pass, const TextureDesc& desc, CompiledImage *const compiled, const CompiledPass *const compiledPass)
+bool compileImage(const PassCompilerSettings& settings, RenderPass& pass, const TextureDesc& desc, CompiledImage *const compiled, const CompiledPass *const compiledPass)
 {
 	if (desc.source == TextureDesc::Source::Create) {
 		TextureKey key = { 1, 1, GL_RGBA16F };
@@ -246,7 +577,7 @@ bool compileImage(const PassCompilerSettings& settings, IRenderPass& pass, const
 	return true;
 }
 
-struct OutputPass : IRenderPass
+struct OutputPass : RenderPass
 {
 	OutputPass()
 	{
@@ -285,11 +616,33 @@ struct OutputPass : IRenderPass
 	{
 		writer.String("type");
 		writer.String("Output");
+
+		writer.String("params");
+		writer.StartArray();
+		serializeParams(writer);
+		writer.EndArray();
 	}
 
-	void deserialize(rapidjson::Value& json) override
+	void deserialize(rapidjson::Value& json, DeserializationContext& ctx) override
 	{
 		assert(0 == strcmp(json["type"].GetString(), "Output"));
+
+		m_paramRefl.clear();
+		m_paramValues.clear();
+		m_paramUids.clear();
+
+		auto& params = json["params"].GetArray();
+		m_paramRefl.resize(params.Size());
+		m_paramValues.resize(params.Size());
+		m_paramUids.resize(params.Size());
+
+		for (size_t i = 0; i < params.Size(); ++i) {
+			m_paramUids[i] = nextParamUid();
+			ctx.uidMap[params[i]["uid"].GetUint()] = m_paramUids[i];
+
+			deserializeShaderParamRefl(params[i]["refl"], &m_paramRefl[i]);
+			deserializeShaderParamValue(params[i]["value"], m_paramRefl[i], &m_paramValues[i]);
+		}
 	}
 
 
@@ -299,9 +652,10 @@ private:
 	vector<u32> m_paramUids;
 };
 
-struct Pass : IRenderPass
+struct ComputePass : RenderPass
 {
-	Pass(const std::string& shaderPath)
+	ComputePass() {}
+	ComputePass(const std::string& shaderPath)
 	{
 		m_computeShader = ComputeShader(shaderPath);
 		updateParams();
@@ -314,7 +668,7 @@ struct Pass : IRenderPass
 		});
 	}
 
-	~Pass() {
+	~ComputePass() {
 		FileWatcher::stopWatchingFile(m_computeShader.m_sourceFile.c_str());
 	}
 
@@ -334,7 +688,8 @@ struct Pass : IRenderPass
 
 		// Compile Loaded images first, so that we can have Created images relative to their dimensions
 		for (size_t i = 0; i < m_paramRefl.size(); ++i) {
-			if (m_paramRefl[i].type == ShaderParamType::Image2d && m_paramValues[i].textureValue.source == TextureDesc::Source::Load) {
+			const bool isTexture = m_paramRefl[i].type == ShaderParamType::Image2d || m_paramRefl[i].type == ShaderParamType::Sampler2d;
+			if (isTexture && m_paramValues[i].textureValue.source == TextureDesc::Source::Load) {
 				if (!compileImage(settings, *this, m_paramValues[i].textureValue, &compiled->compiledImages[i], nullptr)) {
 					return false;
 				}
@@ -383,14 +738,55 @@ struct Pass : IRenderPass
 
 		writer.String("shader");
 		writer.String(m_computeShader.m_sourceFile.c_str());
+
+		writer.String("params");
+		writer.StartArray();
+		serializeParams(writer);
+		writer.EndArray();
 	}
 
-	void deserialize(rapidjson::Value& json) override
+	void deserialize(rapidjson::Value& json, DeserializationContext& ctx) override
 	{
 		assert(0 == strcmp(json["type"].GetString(), "Compute"));
+		deserializeParams(json["params"], ctx);
+
+		m_computeShader = ComputeShader(json["shader"].GetString());
+		updateParams();
+
+		FileWatcher::watchFile(m_computeShader.m_sourceFile.c_str(), [this]()
+		{
+			if (m_computeShader.reload()) {
+				updateParams();
+			}
+		});
+	}
+
+	void findInvalidParamNameByUid(nodegraph::port_uid uid, std::string *const name) override
+	{
+		for (auto& param : m_prevParams) {
+			if (param.uid == uid) {
+				*name = param.refl.name;
+				return;
+			}
+		}
 	}
 
 private:
+	void deserializeParams(rapidjson::Value& json, DeserializationContext& ctx)
+	{
+		auto& params = json.GetArray();
+		m_prevParams.resize(params.Size());
+
+		for (size_t i = 0; i < params.Size(); ++i) {
+			PrevShaderParam& param = m_prevParams[i];
+			param.uid = nextParamUid();
+			ctx.uidMap[params[i]["uid"].GetUint()] = param.uid;
+
+			deserializeShaderParamRefl(params[i]["refl"], &param.refl);
+			deserializeShaderParamValue(params[i]["value"], param.refl, &param.value);
+		}
+	}
+
 	void updateParams() {
 		vector<ShaderParamValue> newValues(m_computeShader.m_params.size());
 		vector<u32> newUids(m_computeShader.m_params.size());
@@ -512,8 +908,8 @@ void serializeGraph(nodegraph::Graph& graph, JsonWriter& writer)
 			writer.Int(port.uid);
 
 			if (port.link != nodegraph::invalid_link_idx) {
-				writer.String("link");
-				writer.Int(port.link);
+				writer.String("src");
+				writer.Int(graph.links[port.link].srcPort);
 			}
 
 			writer.EndObject();
@@ -542,18 +938,25 @@ void serializeGraph(nodegraph::Graph& graph, JsonWriter& writer)
 	writer.EndArray();
 }
 
-void deserializeGraph(nodegraph::Graph *const graph, const rapidjson::Value& json, const std::unordered_map<int, nodegraph::node_handle>& nodeMap)
+void deserializeGraph(nodegraph::Graph *const graph, const rapidjson::Value& json, DeserializationContext& ctx)
 {
-	// TODO: this needs to be a bit more involved. need to serialize shader param reflection info,
-	// and map UIDs to current ones. The serialized ones will not be valid in the new session
-
-	/*auto& nodes = json["nodes"].GetArray();
+	auto& nodes = json["nodes"].GetArray();
 	std::unordered_map<int, nodegraph::port_handle> portMap;
+
+	auto mapUid = [&](u32 uid, u32* mapped) {
+		auto found = ctx.uidMap.find(uid);
+		if (found != ctx.uidMap.end()) {
+			*mapped = found->second;
+			return true;
+		} else {
+			return false;
+		}
+	};
 
 	for (size_t i = 0; i < nodes.Size(); ++i) {
 		auto& node = nodes[i];
-		auto foundNode = nodeMap.find(node["idx"].GetInt());
-		if (foundNode == nodeMap.end()) {
+		auto foundNode = ctx.nodeMap.find(node["idx"].GetInt());
+		if (foundNode == ctx.nodeMap.end()) {
 			continue;
 		}
 
@@ -562,17 +965,56 @@ void deserializeGraph(nodegraph::Graph *const graph, const rapidjson::Value& jso
 		auto& inputs = node["inputs"].GetArray();
 		for (size_t j = 0; j < inputs.Size(); ++j) {
 			auto& port = inputs[j];
-			nodegraph::port_handle portHandle = graph->addPort(nodeHandle.idx, port["uid"].GetInt());
-			portMap[port["idx"].GetInt()] = portHandle;
+			u32 uid;
+			if (mapUid(port["uid"].GetInt(), &uid)) {
+				nodegraph::port_handle portHandle = graph->addPort(nodeHandle.idx, uid);
+				graph->addInputPortToNode(graph->nodes[nodeHandle.idx], portHandle.idx);
+				portMap[port["idx"].GetInt()] = portHandle;
+			}
 		}
 
 		auto& outputs = node["outputs"].GetArray();
 		for (size_t j = 0; j < outputs.Size(); ++j) {
 			auto& port = outputs[j];
-			nodegraph::port_handle portHandle = graph->addPort(nodeHandle.idx, port["uid"].GetInt());
-			portMap[port["idx"].GetInt()] = portHandle;
+			u32 uid;
+			if (mapUid(port["uid"].GetInt(), &uid)) {
+				nodegraph::port_handle portHandle = graph->addPort(nodeHandle.idx, uid);
+				graph->addOutputPortToNode(graph->nodes[nodeHandle.idx], portHandle.idx);
+				portMap[port["idx"].GetInt()] = portHandle;
+			}
 		}
-	}*/
+	}
+
+	for (size_t i = 0; i < nodes.Size(); ++i) {
+		auto& node = nodes[i];
+		auto foundNode = ctx.nodeMap.find(node["idx"].GetInt());
+		if (foundNode == ctx.nodeMap.end()) {
+			continue;
+		}
+
+		const nodegraph::node_handle nodeHandle = foundNode->second;
+
+		auto& inputs = node["inputs"].GetArray();
+		for (size_t j = 0; j < inputs.Size(); ++j) {
+			auto& port = inputs[j];
+
+			if (!port.HasMember("src")) {
+				continue;
+			}
+
+			auto src = portMap.find(port["src"].GetInt());
+			if (src == portMap.end()) {
+				continue;
+			}
+
+			auto dst = portMap.find(port["idx"].GetInt());
+			if (dst == portMap.end()) {
+				continue;
+			}
+
+			graph->addLink(src->second.idx, dst->second.idx);
+		}
+	}
 }
 
 struct CompiledPackage
@@ -583,7 +1025,7 @@ struct CompiledPackage
 
 struct Package
 {
-	vector<shared_ptr<IRenderPass>> m_passes;
+	vector<shared_ptr<RenderPass>> m_passes;
 	nodegraph::Graph graph;
 
 	nodegraph::node_handle addOutputPass() {
@@ -594,7 +1036,7 @@ struct Package
 		m_passes[passIndex] = nullptr;
 	}
 
-	void getNodeDesc(IRenderPass& pass, nodegraph::NodeDesc *const desc)
+	void getNodeDesc(RenderPass& pass, nodegraph::NodeDesc *const desc)
 	{
 		desc->inputs.clear();
 		desc->outputs.clear();
@@ -612,7 +1054,7 @@ struct Package
 	{
 		graph.iterNodes([&](nodegraph::node_handle nodeHandle)
 		{
-			IRenderPass& pass = *m_passes[nodeHandle.idx];
+			RenderPass& pass = *m_passes[nodeHandle.idx];
 			nodegraph::NodeDesc desc;
 			getNodeDesc(pass, &desc);
 			graph.updateNode(nodeHandle, desc);
@@ -622,7 +1064,7 @@ struct Package
 	void handleFileDrop(const std::string& path)
 	{
 		if (ends_with(path, ".glsl")) {
-			addPass(make_shared<Pass>(path));
+			addPass(make_shared<ComputePass>(path));
 		}
 	}
 
@@ -641,28 +1083,37 @@ struct Package
 
 	void findPassOrder(nodegraph::node_handle outputPass, vector<nodegraph::node_idx> *const order)
 	{
-		vector<bool> visited(graph.nodes.size(), false);
+		vector<bool> enqueued(graph.nodes.size(), false);	// has it been added to the 'order' list yet?
+		vector<bool> visited(graph.nodes.size(), false);	// has it been visited yet?
 
-		std::queue<nodegraph::node_idx> nodeq;
-		nodeq.push(outputPass.idx);
-		visited[outputPass.idx] = true;
+		std::vector<std::pair<nodegraph::node_idx, bool>> nodeStack;
+		nodeStack.push_back({outputPass.idx, false});
 
-		while (!nodeq.empty()) {
-			nodegraph::node_idx nodeIdx = nodeq.front();
-			nodeq.pop();
-			order->push_back(nodeIdx);
+		while (!nodeStack.empty()) {
+			auto top = nodeStack.back();
+			nodegraph::node_idx nodeIdx = top.first;
+			nodeStack.pop_back();
 
-			// TODO: only follow valid links, return error if not all ports are connected
-			graph.iterNodeIncidentLinks(nodeIdx, [&](nodegraph::link_handle linkHandle) {
-				nodegraph::node_idx srcNode = graph.ports[graph.links[linkHandle.idx].srcPort].node;
-				if (!visited[srcNode]) {
-					visited[srcNode] = true;
-					nodeq.push(srcNode);
+			if (!top.second) {
+				if (!visited[nodeIdx]) {
+					// Push it into the stack again, so that we process it after
+					// its incident subgraph has been visited.
+					nodeStack.push_back({ nodeIdx, true });
+					visited[nodeIdx] = true;
+
+					// TODO: only follow valid links, return error if not all ports are connected
+					graph.iterNodeIncidentLinks(nodeIdx, [&](nodegraph::link_handle linkHandle) {
+						nodegraph::node_idx srcNode = graph.ports[graph.links[linkHandle.idx].srcPort].node;
+						nodeStack.push_back({ srcNode, false });
+					});
 				}
-			});
+			} else {
+				if (!enqueued[nodeIdx]) {
+					order->push_back(nodeIdx);
+					enqueued[nodeIdx] = true;
+				}
+			}
 		}
-
-		std::reverse(order->begin(), order->end());
 	}
 
 	bool compile(const PassCompilerSettings& settings, CompiledPackage *const compiled) {
@@ -689,31 +1140,43 @@ struct Package
 		// Compile passes, create and load textures
 		u32 compiledPassIdx = 0;
 		for (const nodegraph::node_idx nodeIdx : passOrder) {
-			IRenderPass& dstPass = *m_passes[nodeIdx];
+			RenderPass& dstPass = *m_passes[nodeIdx];
 			CompiledPass& dstCompiled = compiled->orderedPasses[compiledPassIdx++];
 			passToCompiledPass[nodeIdx] = &dstCompiled;
 
 			dstCompiled.compiledImages.clear();
 			dstCompiled.compiledImages.resize(dstPass.params().size());
 
+			bool allInputsBound = true;
+
 			// Propagate texture inputs
-			graph.iterNodeIncidentLinks(nodeIdx, [&](nodegraph::link_handle linkHandle) {
-				const nodegraph::Link& link = graph.links[linkHandle.idx];
-				IRenderPass& srcPass = *m_passes[graph.ports[link.srcPort].node];
-				CompiledPass& srcCompiled = *passToCompiledPass[graph.ports[link.srcPort].node];
-
-				const nodegraph::Port& srcPort = graph.ports[link.srcPort];
-				const nodegraph::Port& dstPort = graph.ports[link.dstPort];
-
-				const int srcParamIdx = srcPass.findParamByPortUid(srcPort.uid);
+			graph.iterNodeInputPorts(nodeIdx, [&](nodegraph::port_handle portHandle) {
+				const nodegraph::Port& dstPort = graph.ports[portHandle.idx];
 				const int dstParamIdx = dstPass.findParamByPortUid(dstPort.uid);
 
-				if (srcParamIdx != -1 && dstParamIdx != -1) {
-					dstCompiled.compiledImages[dstParamIdx].tex = srcCompiled.compiledImages[srcParamIdx].tex;
+				// Only care if this is a valid port
+				if (dstParamIdx != -1)
+				{
+					if (dstPort.link != nodegraph::invalid_link_idx) {
+						const nodegraph::Link& link = graph.links[dstPort.link];
+						RenderPass& srcPass = *m_passes[graph.ports[link.srcPort].node];
+						CompiledPass& srcCompiled = *passToCompiledPass[graph.ports[link.srcPort].node];
+
+						const nodegraph::Port& srcPort = graph.ports[link.srcPort];
+						const int srcParamIdx = srcPass.findParamByPortUid(srcPort.uid);
+
+						if (srcParamIdx != -1) {
+							dstCompiled.compiledImages[dstParamIdx].tex = srcCompiled.compiledImages[srcParamIdx].tex;
+						} else {
+							allInputsBound = false;
+						}
+					} else {
+						allInputsBound = false;
+					}
 				}
 			});
 
-			if (!dstPass.compile(settings, &dstCompiled)) {
+			if (!allInputsBound || !dstPass.compile(settings, &dstCompiled)) {
 				return false;
 			}
 		}
@@ -758,24 +1221,25 @@ struct Package
 		m_passes.clear();
 	}
 
-	nodegraph::node_handle deserializeNode(rapidjson::Value& json)
+	nodegraph::node_handle deserializeNode(rapidjson::Value& json, DeserializationContext& ctx)
 	{
-		shared_ptr<IRenderPass> pass;
+		shared_ptr<RenderPass> pass;
 		const char* const nodeType = json["type"].GetString();
 
 		if (0 == strcmp(nodeType, "Output")) {
 			pass = make_shared<OutputPass>();
 		} else if (0 == strcmp(nodeType, "Compute")) {
-			pass = make_shared<Pass>(json["shader"].GetString());
+			pass = make_shared<ComputePass>();
 		} else {
 			assert(false);
 		}
 
-		pass->deserialize(json);
+		pass->deserialize(json, ctx);
+
 		return addPass(pass);
 	}
 
-	void deserialize(rapidjson::Document& doc, std::unordered_map<int, nodegraph::node_handle> *const nodeMap)
+	void deserialize(rapidjson::Document& doc, DeserializationContext& ctx)
 	{
 		auto& passArray = doc["passes"];
 		const size_t passCount = passArray.Size();
@@ -784,19 +1248,19 @@ struct Package
 			auto& node = passArray[i];
 			const int idx = node["idx"].GetInt();
 
-			nodegraph::node_handle nodeHandle = deserializeNode(node);
-			(*nodeMap)[idx] = nodeHandle;
+			nodegraph::node_handle nodeHandle = deserializeNode(node, ctx);
+			ctx.nodeMap[idx] = nodeHandle;
 		}
 	
-		deserializeGraph(&graph, doc["graph"], *nodeMap);
+		deserializeGraph(&graph, doc["graph"], ctx);
 	}
 
 private:
 
-	nodegraph::node_handle addPass(shared_ptr<IRenderPass> pass)
+	nodegraph::node_handle addPass(shared_ptr<RenderPass> pass)
 	{
 		nodegraph::NodeDesc desc;
-		getNodeDesc(*pass, &desc);
+		//getNodeDesc(*pass, &desc);
 		nodegraph::node_handle nodeHandle = graph.addNode(desc);
 
 		if (m_passes.size() == nodeHandle.idx) {
@@ -822,9 +1286,9 @@ struct Project
 
 Project g_project;
 
-void doTextureLoadUi(ShaderParamValue& value)
+void doTextureLoadUi(ShaderParamValue& value, bool forcePickFile)
 {
-	if (ImGui::Button("Browse...")) {
+	if (ImGui::Button("Browse...") || forcePickFile) {
 		openFileDialog("Select an image", "Image Files\0*.exr\0", &value.textureValue.path);
 	}
 
@@ -832,7 +1296,7 @@ void doTextureLoadUi(ShaderParamValue& value)
 	ImGui::Text(value.textureValue.path.c_str());
 }
 
-void doPassUi(Pass& pass)
+void doPassUi(ComputePass& pass)
 {
 	int maxLabelWidth = 0;
 	for (auto& param : pass.params()) {
@@ -909,7 +1373,7 @@ void doPassUi(Pass& pass)
 			}
 
 			ImGui::SameLine();
-			doTextureLoadUi(value);
+			doTextureLoadUi(value, false);
 		} else if (refl.type == ShaderParamType::Image2d) {
 			ImGui::BeginGroup();
 			int sourceIdx = int(value.textureValue.source);
@@ -920,14 +1384,14 @@ void doPassUi(Pass& pass)
 			};
 			ImGui::PushID("source");
 			ImGui::PushItemWidth(100);
-			bool selected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
+			bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
 			ImGui::PopID();
 			const auto prevSource = value.textureValue.source;
 			value.textureValue.source = TextureDesc::Source(sourceIdx);
 
 			if (TextureDesc::Source::Load == value.textureValue.source) {
 				ImGui::SameLine();
-				doTextureLoadUi(value);
+				doTextureLoadUi(value, sourceJustSelected);
 			} else if (TextureDesc::Source::Create == value.textureValue.source) {
 				int formatIdx = 0;
 				const char* const formats[] = {
@@ -1002,9 +1466,9 @@ void doPassUi(Pass& pass)
 	}
 }
 
-void doPassUi(IRenderPass& pass)
+void doPassUi(RenderPass& pass)
 {
-	if (auto p = dynamic_cast<Pass*>(&pass)) {
+	if (auto p = dynamic_cast<ComputePass*>(&pass)) {
 		doPassUi(*p);
 	}
 }
@@ -1061,7 +1525,7 @@ struct NodeGraphGuiGlue : INodeGraphGuiGlue
 
 		graph.iterNodes([&](nodegraph::node_handle nodeHandle)
 		{
-			IRenderPass& pass = *package.m_passes[nodeHandle.idx];
+			RenderPass& pass = *package.m_passes[nodeHandle.idx];
 			nodeNames[nodeHandle.idx] = pass.getDisplayName();
 
 			graph.iterNodeInputPorts(nodeHandle, [&](nodegraph::port_handle portHandle) {
@@ -1081,6 +1545,7 @@ struct NodeGraphGuiGlue : INodeGraphGuiGlue
 				}
 				else {
 					portInfo[portHandle.idx].valid = false;
+					pass.findInvalidParamNameByUid(port.uid, &portInfo[portHandle.idx].name);
 				}
 			});
 
@@ -1199,14 +1664,14 @@ struct NodeGraphGuiGlue : INodeGraphGuiGlue
 		writer.EndArray();
 	}
 
-	void deserialize(rapidjson::Value& json, const std::unordered_map<int, nodegraph::node_handle>& nodeMap)
+	void deserialize(rapidjson::Value& json, DeserializationContext& ctx)
 	{
 		auto& nodes = json["nodes"].GetArray();
 		for (size_t i = 0; i < nodes.Size(); ++i) {
 			auto& node = nodes[i];
 			int idx = node["idx"].GetInt();
-			auto handleFound = nodeMap.find(idx);
-			if (handleFound != nodeMap.end()) {
+			auto handleFound = ctx.nodeMap.find(idx);
+			if (handleFound != ctx.nodeMap.end()) {
 				const nodegraph::node_handle nodeHandle = handleFound->second;
 				vec2 pos(node["pos"].GetArray()[0].GetFloat(), node["pos"].GetArray()[1].GetFloat());
 
@@ -1246,12 +1711,13 @@ void doMainMenu()
 			rapidjson::Document doc;
 			doc.Parse(data.data(), data.size());
 
-			std::unordered_map<int, nodegraph::node_handle> nodeMap;
+			//std::unordered_map<int, nodegraph::node_handle> nodeMap;
+			DeserializationContext ctx;
 			guiGlue = NodeGraphGuiGlue();
 			g_project.m_packages[0]->reset();
-			g_project.m_packages[0]->deserialize(doc, &nodeMap);
+			g_project.m_packages[0]->deserialize(doc, ctx);
 
-			guiGlue.deserialize(doc["gui"], nodeMap);
+			guiGlue.deserialize(doc["gui"], ctx);
 
 			// TODO: read gui stuff
 		}

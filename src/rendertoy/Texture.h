@@ -13,6 +13,7 @@ struct TextureDesc {
 		, useRelativeScale(true)
 		, relativeScale(1, 1)
 		, resolution(1280, 720)
+		, scaleRelativeTo("#window")
 	{}
 
 	enum class Source {
