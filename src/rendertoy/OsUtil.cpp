@@ -25,6 +25,26 @@ bool openFileDialog(const char* const title, const char *const filter, std::stri
 	}
 }
 
+bool saveFileDialog(const char* const title, const char *const filter, std::string *const result)
+{
+	OPENFILENAME ofn = {};
+	char filename[1024] = { '\0' };
+	ofn.lStructSize = sizeof(ofn);
+	ofn.lpstrFilter = filter;
+	ofn.lpstrFile = filename;
+	ofn.nMaxFile = sizeof(filename);
+	ofn.lpstrTitle = title;
+	ofn.Flags = OFN_DONTADDTORECENT | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+	if (GetSaveFileNameA(&ofn))
+	{
+		*result = filename;
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
 void shellExecute(const char* const cmd)
 {
 	char fullPath[1024];

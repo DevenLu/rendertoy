@@ -1,4 +1,4 @@
-uniform restrict writeonly image2D outputTex;	//@ relativeTo(inputImage)
+uniform restrict writeonly image2D outputTex;	//@ relativeTo(inputImage1)
 layout(rgba16f) uniform restrict readonly image2D inputImage1;	//@ input
 layout(rgba16f) uniform restrict readonly image2D inputImage2;	//@ input
 

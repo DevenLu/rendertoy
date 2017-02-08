@@ -1689,6 +1689,7 @@ struct NodeGraphGuiGlue : INodeGraphGuiGlue
 GLFWwindow* g_mainWindow = nullptr;
 std::queue<WindowEvent> g_windowEvents;
 NodeGraphGuiGlue guiGlue;
+std::string g_currentProjectFile;
 
 extern void ImGui_ImplGlfwGL3_KeyCallback(GLFWwindow*, int, int, int, int);
 static void windowKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -1699,45 +1700,98 @@ static void windowKeyCallback(GLFWwindow* window, int key, int scancode, int act
 	ImGui_ImplGlfwGL3_KeyCallback(window, key, scancode, action, mods);
 }
 
+
+void doNewProject()
+{
+	g_project.m_packages[0]->reset();
+	g_project.m_packages[0]->addOutputPass();
+	g_currentProjectFile.clear();
+}
+
+void doOpenProject()
+{
+	std::string filePath;
+	if (openFileDialog("Select a project file to load", "RenderToy Project\0*.rtoy\0", &filePath))
+	{
+		vector<char> data = loadTextFileZ(filePath.c_str());
+
+		rapidjson::Document doc;
+		doc.Parse(data.data(), data.size());
+
+		DeserializationContext ctx;
+		guiGlue = NodeGraphGuiGlue();
+		g_project.m_packages[0]->reset();
+		g_project.m_packages[0]->deserialize(doc, ctx);
+
+		guiGlue.deserialize(doc["gui"], ctx);
+		g_currentProjectFile = filePath;
+	}
+}
+
+void doSaveProject(const std::string& filePath)
+{
+	rapidjson::StringBuffer sb;
+	rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(sb);
+	writer.StartObject();
+
+	g_project.m_packages[0]->serialize(writer);
+
+	writer.String("gui");
+	writer.StartObject();
+	guiGlue.serialize(writer);
+	writer.EndObject();
+
+	writer.EndObject();
+	std::ofstream(filePath).write(sb.GetString(), sb.GetLength());
+	puts(sb.GetString());
+
+	g_currentProjectFile = filePath;
+}
+
+void doSaveProject()
+{
+	std::string filePath = g_currentProjectFile;
+	if (!filePath.empty() || saveFileDialog("Save as", "RenderToy Project\0*.rtoy\0", &filePath))
+	{
+		doSaveProject(filePath);
+	}
+}
+
+
 void doMainMenu()
 {
+	const auto& io = ImGui::GetIO();
+
+	if (io.KeyCtrl && io.KeysDown['N']) {
+		doNewProject();
+	}
+
+	if (io.KeyCtrl && io.KeysDown['O']) {
+		doOpenProject();
+	}
+
+	if (io.KeyCtrl && io.KeysDown['S']) {
+		doSaveProject();
+	}
+
 	if (ImGui::BeginMenu("File")) {
-		if (ImGui::MenuItem("New", nullptr)) {
-
+		if (ImGui::MenuItem("New", "Ctrl+N")) {
+			doNewProject();
 		}
-		if (ImGui::MenuItem("Open", nullptr)) {
-			vector<char> data = loadTextFileZ("rendertoy.state");
-
-			rapidjson::Document doc;
-			doc.Parse(data.data(), data.size());
-
-			//std::unordered_map<int, nodegraph::node_handle> nodeMap;
-			DeserializationContext ctx;
-			guiGlue = NodeGraphGuiGlue();
-			g_project.m_packages[0]->reset();
-			g_project.m_packages[0]->deserialize(doc, ctx);
-
-			guiGlue.deserialize(doc["gui"], ctx);
-
-			// TODO: read gui stuff
+		if (ImGui::MenuItem("Open", "Ctrl+O")) {
+			doOpenProject();
 		}
-		if (ImGui::MenuItem("Save", nullptr)) {
-			rapidjson::StringBuffer sb;
-			rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(sb);
-			writer.StartObject();
-
-			g_project.m_packages[0]->serialize(writer);
-
-			writer.String("gui");
-			writer.StartObject();
-			guiGlue.serialize(writer);
-			writer.EndObject();
-
-			writer.EndObject();
-			std::ofstream("rendertoy.state").write(sb.GetString(), sb.GetLength());
-			puts(sb.GetString());
+		if (ImGui::MenuItem("Save", "Ctrl+S")) {
+			doSaveProject();
 		}
-		if (ImGui::MenuItem("Exit", nullptr)) {
+		if (ImGui::MenuItem("Save As", nullptr)) {
+			std::string filePath;
+			if (saveFileDialog("Save as", "RenderToy Project\0*.rtoy\0", &filePath))
+			{
+				doSaveProject(filePath);
+			}
+		}
+		if (ImGui::MenuItem("Exit", "Alt+F4")) {
 			glfwSetWindowShouldClose(g_mainWindow, 1);
 		}
 
