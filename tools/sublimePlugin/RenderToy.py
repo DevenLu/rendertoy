@@ -3,6 +3,7 @@ import functools
 import html
 import os.path
 import re
+import sys, traceback
 
 pluginInstances = []
 
@@ -61,7 +62,7 @@ class RenderToy(sublime_plugin.ViewEventListener):
                     #'<a href=hide>' + chr(0x00D7) + '</a></div>' +
                     '</body>'),
                 sublime.LAYOUT_BELOW))
-            self.phantom_set.update(phantoms)
+        self.phantom_set.update(phantoms)
 
     def hide_phantoms(self):
         self.phantom_set = None
@@ -89,20 +90,27 @@ class RenderToy(sublime_plugin.ViewEventListener):
                 self.prevMtime = mtime
                 self.errors = {}
 
-                for e in errors:
-                    m = self.errorRe.match(e)
+                def parseError(e, regex):
+                    m = regex.match(e)
                     if m:
-                        line = int(m.group(2))
                         column = int(m.group(1))
+                        line = int(m.group(2))
                         text = m.group(3)
                         if line in self.errors:
-                            self.errors[line].append((column, text))
+                            self.errors[line].append([column, text])
                         else:
-                            self.errors[line] = [(column, text)]
+                            self.errors[line] = [[column, text],]
+                        return True
+                    else:
+                        return False
+
+                for e in errors:
+                    parseError(e, self.errorReIntel) or parseError(e, self.errorReNvidia)
 
                 self.update_phantoms()
         except BaseException as e:
             print('Could not parse "%s": %s' % (errorsFilePath, e))
+            traceback.print_exc(file=sys.stdout)
 
     def handleTimeout(self, view):
         if self.shouldUnload:
@@ -119,5 +127,6 @@ class RenderToy(sublime_plugin.ViewEventListener):
             self.shouldUnload = False
             self.view = view
             self.prevMtime = 0
-            self.errorRe = re.compile(r'ERROR: (.+):(\d+): (.*)')
+            self.errorReIntel = re.compile(r'ERROR: (\d+):(\d+): (.*)')
+            self.errorReNvidia = re.compile(r'(\d+)\((\d+)\) : (.*)')
             self.handleTimeout(self.view)
