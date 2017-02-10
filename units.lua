@@ -5,6 +5,8 @@ local glfwDefines = {
 	"_GLFW_WIN32", "_GLFW_USE_OPENGL", "_GLFW_WGL"
 }
 
+local copy_freeimage_win64 = CopyFile { Source = "src/ext/freeimage/win64/FreeImage.dll", Target = "$(OBJECTDIR)/FreeImage.dll" }
+
 local glfw = StaticLibrary {
 	Name = "glfw",
 	Includes = { "src/glfw/include" },
@@ -49,7 +51,8 @@ local tinyexr = StaticLibrary {
 local rendertoy = Program {
 	Name = "rendertoy",
 	Depends = {
-		glfw, imgui, glad, tinyexr
+		glfw, imgui, glad, tinyexr,
+		{ copy_freeimage_win64; Config = {"win*"} },
 	},
 	Defines = glfwDefines,
 	Includes = {
@@ -59,6 +62,7 @@ local rendertoy = Program {
 		"src/ext/rapidjson/include",
 		"src/ext/glm/include",
 		"src/ext/tinyexr",
+		"src/ext/freeimage/include",
 	},
 	Sources = {
 		Glob { Dir = "src/rendertoy", Extensions = {".cpp", ".h"} }
@@ -70,6 +74,7 @@ local rendertoy = Program {
 			"comdlg32.lib",
 			"gdi32.lib",
 			"opengl32.lib",
+			"src/ext/freeimage/win64/FreeImage.lib",
 			Config = {"win*"}
 		},
 	},

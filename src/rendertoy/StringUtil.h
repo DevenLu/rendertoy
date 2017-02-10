@@ -32,3 +32,9 @@ inline std::string &rtrim(std::string &s) {
 inline std::string &trim(std::string &s) {
 	return ltrim(rtrim(s));
 }
+
+inline std::string to_lower(const std::string& s) {
+	std::string sl = s;
+	std::transform(sl.begin(), sl.end(), sl.begin(), ::tolower);
+	return sl;
+}

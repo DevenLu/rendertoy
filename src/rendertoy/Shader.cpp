@@ -3,6 +3,7 @@
 #include "StringUtil.h"
 #include "FileUtil.h"
 #include <glad/glad.h>
+#include <unordered_set>
 #include <fstream>
 
 vector<char> loadShaderSource(const std::string& path, const char* preprocessorOptions)
@@ -56,12 +57,12 @@ ShaderParamValue ShaderParamRefl::defaultValue() const
 		if (annotation.has("input")) {
 			res.textureValue.source = TextureDesc::Source::Input;
 		}
-		else if (annotation.has("default")) {
-			res.textureValue.path = annotation.get("default", "");
+		else 
+		{
+			if (annotation.has("default")) {
+				res.textureValue.path = annotation.get("default", "");
+			}
 			res.textureValue.source = TextureDesc::Source::Load;
-		}
-		else {
-			res.textureValue.source = TextureDesc::Source::Create;
 		}
 	}
 	else if (ShaderParamType::Image2d == type) {
@@ -206,7 +207,9 @@ static GLuint makeShader(GLenum shaderType, const vector<char>& source, std::str
 	const GLchar* sources[1] = { source.data() };
 	glShaderSource(handle, 1, sources, &sourceLength);
 
+	glDisable(GL_DEBUG_OUTPUT);
 	glCompileShader(handle);
+	glEnable(GL_DEBUG_OUTPUT);
 	{
 		GLint shader_ok;
 		glGetShaderiv(handle, GL_COMPILE_STATUS, &shader_ok);
@@ -266,6 +269,27 @@ void ComputeShader::reflectParams(const std::unordered_map<std::string, ParamAnn
 			param.annotation = it->second;
 		}
 	}
+
+	std::unordered_set<std::string> textureParamNames;
+	for (auto& p : m_params) {
+		if (p.type == ShaderParamType::Sampler2d || p.type == ShaderParamType::Image2d) {
+			textureParamNames.insert(p.name);
+		}
+	}
+
+	m_params.erase(
+		std::remove_if(m_params.begin(), m_params.end(), [&](const ShaderParamBindingRefl& p) {
+			if (p.type == ShaderParamType::Float2 || p.type == ShaderParamType::Float4 || p.type == ShaderParamType::Int2) {
+				if (ends_with(p.name, "_size")) {
+					std::string texName = p.name.substr(0, p.name.length() - 5);
+					return textureParamNames.find(texName) != textureParamNames.end();
+				}
+			}
+
+			return false;
+		}),
+		m_params.end()
+	);
 }
 
 std::unordered_map<std::string, ParamAnnotation> ComputeShader::parseAnnotations(const vector<char>& source)

@@ -34,6 +34,7 @@ bool saveFileDialog(const char* const title, const char *const filter, std::stri
 	ofn.lpstrFile = filename;
 	ofn.nMaxFile = sizeof(filename);
 	ofn.lpstrTitle = title;
+	ofn.lpstrDefExt = "rtoy";
 	ofn.Flags = OFN_DONTADDTORECENT | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 	if (GetSaveFileNameA(&ofn))
 	{

@@ -99,6 +99,10 @@ struct CompiledPass
 			const auto& refl = param.refl;
 			const auto& value = param.value;
 
+			if (-1 == refl.location) {
+				continue;
+			}
+
 			if (refl.type == ShaderParamType::Float) {
 				glUniform1f(refl.location, value.floatValue);
 			}
@@ -147,6 +151,17 @@ struct CompiledPass
 					glSamplerParameteri(samplerId, GL_TEXTURE_WRAP_T, value.textureValue.wrapT ? GL_REPEAT : GL_CLAMP_TO_EDGE);
 					glBindSampler(texUnit, samplerId);
 					++texUnit;
+				}
+			}
+
+			// Upload hardcoded [texname]_size uniform; xy: resolution, zw: 1/resolution
+			if (refl.type == ShaderParamType::Image2d || refl.type == ShaderParamType::Sampler2d) {
+				CompiledImage& img = compiledImages[param.idx];
+				const GLint sizeLoc = glGetUniformLocation(shader->m_programHandle, (refl.name + "_size").c_str());
+				if (sizeLoc != -1) {
+					vec2 reso = vec2(img.tex->key.width, img.tex->key.height);
+					vec4 size = vec4(reso.x, reso.y, 1.f / reso.x, 1.f / reso.y);
+					glUniform4fv(sizeLoc, 1, &size.x);
 				}
 			}
 		}
@@ -477,6 +492,13 @@ void deserializeShaderParamValue(rapidjson::Value& json, const ShaderParamRefl& 
 
 		if (refl.type == ShaderParamType::Sampler2d)
 		{
+			value->textureValue.source = TextureDesc::Source::Input;
+
+			if (0 == strcmp("Load", json["source"].GetString())) {
+				value->textureValue.source = TextureDesc::Source::Load;
+				value->textureValue.path = json["path"].GetString();
+			}
+
 			value->textureValue.wrapS = json["wrapS"].GetBool();
 			value->textureValue.wrapT = json["wrapT"].GetBool();
 		}
@@ -583,7 +605,7 @@ struct OutputPass : RenderPass
 	{
 		ShaderParamBindingRefl param;
 		param.name = "image";
-		param.type = ShaderParamType::Image2d;
+		param.type = ShaderParamType::Sampler2d;
 		m_paramRefl.push_back(param);
 		ShaderParamValue value;
 		value.textureValue.source = TextureDesc::Source::Input;
@@ -881,7 +903,7 @@ bool needsOutputPort(const ShaderParamProxy& param)
 
 bool needsInputPort(const ShaderParamProxy& param)
 {
-	return param.refl.type == ShaderParamType::Image2d && param.value.textureValue.source == TextureDesc::Source::Input;
+	return (param.refl.type == ShaderParamType::Image2d || param.refl.type == ShaderParamType::Sampler2d) && param.value.textureValue.source == TextureDesc::Source::Input;
 }
 
 void serializeGraph(nodegraph::Graph& graph, JsonWriter& writer)
@@ -1289,7 +1311,10 @@ Project g_project;
 void doTextureLoadUi(ShaderParamValue& value, bool forcePickFile)
 {
 	if (ImGui::Button("Browse...") || forcePickFile) {
-		openFileDialog("Select an image", "Image Files\0*.exr\0", &value.textureValue.path);
+		openFileDialog(
+			"Select an image",
+			"Image Files\0*.bmp;*.cut;*.dds;*.exr;*.g3;*.gif;*.hdr;*.ico;*.iff;*.lbm;*.j2k;*.j2c;*.jng;*.jp2;*.jpg;*.jif;*.jpeg;*.jpe;*.jxr;*.wdp;*.hdp;*.koa;*.mng;*.pcd;*.pcx;*.pfm;*.pct;*.pict;*.pic;*.png;*.pbm;*.pgm;*.ppm;*.psd;*.ras;*.sgi;*.rgb;*.rgba;*.bw;*.tga;*.targa;*.tif;*.tiff;*.wap;*.wbmp;*.wbm;*.webp;*.xbm;*.xpm;*.bmp\0",
+			&value.textureValue.path);
 	}
 
 	ImGui::SameLine();
@@ -1344,6 +1369,19 @@ void doPassUi(ComputePass& pass)
 		} else if (refl.type == ShaderParamType::Int4) {
 			ImGui::SliderInt4("", &value.int4Value.x, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
 		} else if (refl.type == ShaderParamType::Sampler2d) {
+			int sourceIdx = TextureDesc::Source::Load == value.textureValue.source ? 0 : 1;
+			const char* const sources[] = {
+				"Load",
+				"Input",
+			};
+			ImGui::PushID("source");
+			ImGui::PushItemWidth(100);
+			bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
+			ImGui::PopID();
+			value.textureValue.source = 0 == sourceIdx ? TextureDesc::Source::Load : TextureDesc::Source::Input;
+
+			ImGui::SameLine();
+
 			{
 				ImGui::PushID("wrapS");
 				int wrapS = value.textureValue.wrapS ? 0 : 1;
@@ -1372,8 +1410,10 @@ void doPassUi(ComputePass& pass)
 				ImGui::PopID();
 			}
 
-			ImGui::SameLine();
-			doTextureLoadUi(value, false);
+			if (TextureDesc::Source::Load == value.textureValue.source) {
+				ImGui::SameLine();
+				doTextureLoadUi(value, sourceJustSelected);
+			}
 		} else if (refl.type == ShaderParamType::Image2d) {
 			ImGui::BeginGroup();
 			int sourceIdx = int(value.textureValue.source);
@@ -1386,7 +1426,6 @@ void doPassUi(ComputePass& pass)
 			ImGui::PushItemWidth(100);
 			bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
 			ImGui::PopID();
-			const auto prevSource = value.textureValue.source;
 			value.textureValue.source = TextureDesc::Source(sourceIdx);
 
 			if (TextureDesc::Source::Load == value.textureValue.source) {
@@ -1421,7 +1460,8 @@ void doPassUi(ComputePass& pass)
 					int targetIdx = 0;
 
 					for (auto& otherParam : pass.params()) {
-						if (otherParam.refl.type == ShaderParamType::Image2d && otherParam.value.textureValue.source != TextureDesc::Source::Create) {
+						const bool isTexture = otherParam.refl.type == ShaderParamType::Image2d || otherParam.refl.type == ShaderParamType::Sampler2d;
+						if (isTexture && otherParam.value.textureValue.source != TextureDesc::Source::Create) {
 							if (otherParam.refl.name == value.textureValue.scaleRelativeTo) {
 								targetIdx = int(targetNames.size());
 							}
@@ -1838,7 +1878,7 @@ void drawFullscreenQuad(GLuint tex)
 
 	glUseProgram(g_ShaderHandle);
 
-	glActiveTexture(0);
+	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, tex);
 
 	const GLint loc = glGetUniformLocation(g_ShaderHandle, "Texture");
@@ -1898,8 +1938,8 @@ void APIENTRY openGLDebugCallback(
 	const GLchar* message,
 	const void* userParam
 ) {
-	if (GL_DEBUG_SEVERITY_NOTIFICATION == severity) {
-		printf("GL debug: %s", message);
+	if (GL_DEBUG_TYPE_PERFORMANCE == type || GL_DEBUG_SEVERITY_NOTIFICATION == severity) {
+		printf("GL debug: %s\n", message);
 	}
 	else {
 		puts(message);
@@ -1907,13 +1947,13 @@ void APIENTRY openGLDebugCallback(
 	}
 }
 
-//int main(int, char**)
-int CALLBACK WinMain(
+int main(int, char**)
+/*int CALLBACK WinMain(
 	_In_ HINSTANCE hInstance,
 	_In_ HINSTANCE hPrevInstance,
 	_In_ LPSTR     lpCmdLine,
 	_In_ int       nCmdShow
-) {
+)*/ {
 	// Setup window
 	glfwSetErrorCallback(&windowErrorCallback);
 	FileWatcher::start();
@@ -1925,6 +1965,7 @@ int CALLBACK WinMain(
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 4);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
+	glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, 1);
 
 	GLFWmonitor* monitor = glfwGetPrimaryMonitor();
 	const GLFWvidmode* vidMode = glfwGetVideoMode(monitor);

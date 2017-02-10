@@ -23,7 +23,7 @@ struct TextureDesc {
 	};
 
 	std::string path;
-	Source source = Source::Create;
+	Source source = Source::Input;
 	std::string scaleRelativeTo;
 	vec2 relativeScale;
 	ivec2 resolution;

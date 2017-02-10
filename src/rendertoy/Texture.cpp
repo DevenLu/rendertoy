@@ -1,8 +1,10 @@
 #include "Texture.h"
+#include "StringUtil.h"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <tinyexr.h>
+#include <FreeImage.h>
 
 std::unordered_map<std::string, shared_ptr<CreatedTexture>> g_loadedTextures;
 
@@ -12,14 +14,8 @@ CreatedTexture::~CreatedTexture()
 	if (samplerId != 0) glDeleteSamplers(1, &samplerId);
 }
 
-shared_ptr<CreatedTexture> loadTexture(const TextureDesc& desc) {
-	{
-		auto found = g_loadedTextures.find(desc.path);
-		if (found != g_loadedTextures.end()) {
-			return found->second;
-		}
-	}
-
+shared_ptr<CreatedTexture> loadTextureExr(const TextureDesc& desc)
+{
 	int ret;
 	const char* err;
 
@@ -111,7 +107,10 @@ shared_ptr<CreatedTexture> loadTexture(const TextureDesc& desc) {
 		}
 	}
 
-	shared_ptr<CreatedTexture> res = createTexture(desc, TextureKey{ u32(exr_image.width), u32(exr_image.height), GL_RGBA16F });
+	shared_ptr<CreatedTexture> res = createTexture(
+		desc,
+		TextureKey{ u32(exr_image.width), u32(exr_image.height), GL_RGBA16F }
+	);
 
 	glBindTexture(GL_TEXTURE_2D, res->texId);
 	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, exr_image.width, exr_image.height, GL_RGBA, GL_HALF_FLOAT, out_rgba);
@@ -119,17 +118,102 @@ shared_ptr<CreatedTexture> loadTexture(const TextureDesc& desc) {
 	FreeEXRHeader(&exr_header);
 	FreeEXRImage(&exr_image);
 
-	g_loadedTextures[desc.path] = res;
 	return res;
 }
 
+static FIBITMAP* LoadFIBITMAP(const std::string& path) {
+	FREE_IMAGE_FORMAT fif = FIF_UNKNOWN;
+
+	fif = FreeImage_GetFileType(path.c_str());
+
+	if (FIF_UNKNOWN == fif) {
+		// No signature? Try to guess the file format from the file extension.
+		fif = FreeImage_GetFIFFromFilename(path.c_str());
+	}
+
+	if ((fif != FIF_UNKNOWN) && FreeImage_FIFSupportsReading(fif)) {
+		FIBITMAP *dib = FreeImage_Load(fif, path.c_str());
+		return dib;
+	}
+
+	return nullptr;
+}
+
+shared_ptr<CreatedTexture> loadTextureFreeimage(const TextureDesc& desc)
+{
+	static bool freeimageInitialized = (FreeImage_Initialise(), true);
+	auto dib = shared_ptr<FIBITMAP>(LoadFIBITMAP(desc.path), FreeImage_Unload);
+
+	if (dib == nullptr) {
+		// error("FreeImage returned a null bitmap");
+		return nullptr;
+	}
+
+	if (FreeImage_GetPalette(dib.get())) {
+		// Convert to a bitmap
+		const bool transparent = FreeImage_GetTransparencyCount(dib.get()) > 0;
+		auto convFn = transparent ? &FreeImage_ConvertTo32Bits : &FreeImage_ConvertTo24Bits;
+		dib = shared_ptr<FIBITMAP>(convFn(dib.get()), FreeImage_Unload);
+	}
+
+	const FREE_IMAGE_TYPE itype = FreeImage_GetImageType(dib.get());
+
+	shared_ptr<CreatedTexture> result = nullptr;
+
+	if (FIT_BITMAP == itype) {
+		uint bits = FreeImage_GetBPP(dib.get());
+		if (bits != 24 && bits != 32) {
+			dib = shared_ptr<FIBITMAP>(FreeImage_ConvertTo24Bits(dib.get()), FreeImage_Unload);
+			bits = 24;
+		}
+
+		u32 width = FreeImage_GetWidth(dib.get());
+		u32 height = FreeImage_GetHeight(dib.get());
+		const u32 scanLineBytes = FreeImage_GetPitch(dib.get());
+
+		result = createTexture(
+			desc,
+			TextureKey{ u32(width), u32(height), uint(24 == bits ? GL_SRGB8 : GL_SRGB8_ALPHA8) }
+		);
+
+		glBindTexture(GL_TEXTURE_2D, result->texId);
+		const u8* const imgData = FreeImage_GetBits(dib.get());
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, uint(24 == bits ? GL_BGR : GL_BGRA), GL_UNSIGNED_BYTE, (const void*)imgData);
+	} else {
+		// TODO
+	}
+
+	return result;
+}
+
+shared_ptr<CreatedTexture> loadTexture(const TextureDesc& desc) {
+	{
+		auto found = g_loadedTextures.find(desc.path);
+		if (found != g_loadedTextures.end()) {
+			return found->second;
+		}
+	}
+
+	shared_ptr<CreatedTexture> result;
+
+	if (ends_with(to_lower(desc.path), ".exr")) {
+		result = loadTextureExr(desc);
+	} else {
+		result = loadTextureFreeimage(desc);
+	}
+
+	g_loadedTextures[desc.path] = result;
+	return result;
+}
 
 shared_ptr<CreatedTexture> createTexture(const TextureDesc& desc, const TextureKey& key)
 {
 	GLuint tex1;
 	glGenTextures(1, &tex1);
 	glBindTexture(GL_TEXTURE_2D, tex1);
-	glTexStorage2D(GL_TEXTURE_2D, 1u, GL_RGBA16F, key.width, key.height);
+	glTexStorage2D(GL_TEXTURE_2D, 1u, key.format, key.width, key.height);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
 	GLuint samplerId;
 	glGenSamplers(1, &samplerId);
