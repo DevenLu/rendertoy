@@ -1889,6 +1889,21 @@ void drawFullscreenQuad(GLuint tex)
 	glUseProgram(0);
 }
 
+void drawOutputView(const shared_ptr<CreatedTexture>& tex, int width, int height)
+{
+	vec2 texSize = vec2(tex->key.width, tex->key.height);
+	vec2 viewSize = vec2(width, height);
+	vec2 texFrac = texSize / viewSize;
+
+	texFrac /= std::max(texFrac.x, texFrac.y);
+	ivec2 padding = ivec2(viewSize * (1.f - texFrac));
+
+	glViewport(padding.x / 2, padding.y / 2, width - padding.x, height - padding.y);
+	glScissor(padding.x / 2, padding.y / 2, width - padding.x, height - padding.y);
+
+	drawFullscreenQuad(tex->texId);
+}
+
 void renderProject(int width, int height)
 {
 	for (shared_ptr<Package>& package : g_project.m_packages) {
@@ -1917,7 +1932,7 @@ void renderProject(int width, int height)
 			pass.render(dispatchWidth, dispatchHeight);
 		}
 
-		drawFullscreenQuad(compiled.outputTexture->texId);
+		drawOutputView(compiled.outputTexture, width, height);
 
 		for (auto& pass : compiled.orderedPasses) {
 			for (auto& img : pass.compiledImages) {
@@ -2096,8 +2111,6 @@ int main(int, char**)
 		glClear(GL_COLOR_BUFFER_BIT);
 
 		const u32 renderHeight = (fullscreen || maximized) ? display_h : display_h / 2;
-		glViewport(0, 0, display_w, renderHeight);
-		glScissor(0, 0, display_w, renderHeight);
 		glEnable(GL_FRAMEBUFFER_SRGB);
 		renderProject(display_w, renderHeight);
 		glDisable(GL_FRAMEBUFFER_SRGB);
