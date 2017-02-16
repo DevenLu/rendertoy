@@ -63,6 +63,7 @@ local rendertoy = Program {
 		"src/ext/glm/include",
 		"src/ext/tinyexr",
 		"src/ext/freeimage/include",
+		"src/ext/gli",
 	},
 	Sources = {
 		Glob { Dir = "src/rendertoy", Extensions = {".cpp", ".h"} }

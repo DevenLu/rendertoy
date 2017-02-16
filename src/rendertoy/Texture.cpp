@@ -1,10 +1,12 @@
 #include "Texture.h"
 #include "StringUtil.h"
 
+#define NOMINMAX
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <tinyexr.h>
 #include <FreeImage.h>
+#include <gli/gli.hpp>
 
 std::unordered_map<std::string, shared_ptr<CreatedTexture>> g_loadedTextures;
 
@@ -121,6 +123,60 @@ shared_ptr<CreatedTexture> loadTextureExr(const TextureDesc& desc)
 	return res;
 }
 
+shared_ptr<CreatedTexture> loadTextureGli(const TextureDesc& desc)
+{
+	gli::texture image = gli::load(desc.path.c_str());
+	if (image.empty() || image.target() != gli::TARGET_2D) {
+		return nullptr;
+	}
+
+	// TODO: is this needed?
+	//image = gli::flip(image);
+
+	gli::gl GL(gli::gl::PROFILE_GL33);
+	gli::gl::format const format = GL.translate(image.format(), image.swizzles());
+	GLenum target = GL.translate(image.target());
+
+	const bool compressed = gli::is_compressed(image.format());
+
+	GLuint TextureName = 0;
+	glGenTextures(1, &TextureName);
+	glBindTexture(target, TextureName);
+	glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, 0);
+	glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(image.levels() - 1));
+	glTexParameteriv(target, GL_TEXTURE_SWIZZLE_RGBA, &format.Swizzles[0]);
+
+	auto extent = image.extent();
+	glTexStorage2D(target, static_cast<GLint>(image.levels()), format.Internal, extent.x, extent.y);
+
+	for (std::size_t Level = 0; Level < image.levels(); ++Level)
+	{
+		glm::tvec3<GLsizei> levelExtent(image.extent(Level));
+		if (compressed) {
+			glCompressedTexSubImage2D(
+				target, static_cast<GLint>(Level), 0, 0, levelExtent.x, levelExtent.y,
+				format.Internal, static_cast<GLsizei>(image.size(Level)), image.data(0, 0, Level));
+		} else {
+			glTexSubImage2D(
+				target, static_cast<GLint>(Level), 0, 0, levelExtent.x, levelExtent.y,
+				format.External, format.Type, image.data(0, 0, Level));
+		}
+	}
+
+	GLuint samplerId;
+	glGenSamplers(1, &samplerId);
+	glSamplerParameteri(samplerId, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glSamplerParameteri(samplerId, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glSamplerParameteri(samplerId, GL_TEXTURE_MAX_LOD, static_cast<GLint>(image.levels() - 1));
+
+	auto tex = std::make_shared<CreatedTexture>();
+	tex->key = TextureKey{ u32(extent.x), u32(extent.y), (unsigned int)(format.Internal) };
+	tex->texId = TextureName;
+	tex->samplerId = samplerId;
+
+	return tex;
+}
+
 static FIBITMAP* LoadFIBITMAP(const std::string& path) {
 	FREE_IMAGE_FORMAT fif = FIF_UNKNOWN;
 
@@ -160,6 +216,9 @@ shared_ptr<CreatedTexture> loadTextureFreeimage(const TextureDesc& desc)
 
 	shared_ptr<CreatedTexture> result = nullptr;
 
+	u32 width = FreeImage_GetWidth(dib.get());
+	u32 height = FreeImage_GetHeight(dib.get());
+
 	if (FIT_BITMAP == itype) {
 		uint bits = FreeImage_GetBPP(dib.get());
 		if (bits != 24 && bits != 32) {
@@ -167,10 +226,7 @@ shared_ptr<CreatedTexture> loadTextureFreeimage(const TextureDesc& desc)
 			bits = 24;
 		}
 
-		u32 width = FreeImage_GetWidth(dib.get());
-		u32 height = FreeImage_GetHeight(dib.get());
 		const u32 scanLineBytes = FreeImage_GetPitch(dib.get());
-
 		result = createTexture(
 			desc,
 			TextureKey{ u32(width), u32(height), uint(24 == bits ? GL_SRGB8 : GL_SRGB8_ALPHA8) }
@@ -179,6 +235,16 @@ shared_ptr<CreatedTexture> loadTextureFreeimage(const TextureDesc& desc)
 		glBindTexture(GL_TEXTURE_2D, result->texId);
 		const u8* const imgData = FreeImage_GetBits(dib.get());
 		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, uint(24 == bits ? GL_BGR : GL_BGRA), GL_UNSIGNED_BYTE, (const void*)imgData);
+	} else if (FIT_RGBF == itype) {
+		const u32 scanLineBytes = FreeImage_GetPitch(dib.get());
+		result = createTexture(
+			desc,
+			TextureKey{ u32(width), u32(height), GL_RGB32F }
+		);
+
+		glBindTexture(GL_TEXTURE_2D, result->texId);
+		const u8* const imgData = FreeImage_GetBits(dib.get());
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGB, GL_FLOAT, (const void*)imgData);
 	} else {
 		// TODO
 	}
@@ -198,6 +264,8 @@ shared_ptr<CreatedTexture> loadTexture(const TextureDesc& desc) {
 
 	if (ends_with(to_lower(desc.path), ".exr")) {
 		result = loadTextureExr(desc);
+	} else if (ends_with(to_lower(desc.path), ".dds") || ends_with(to_lower(desc.path), ".ktx")) {
+		result = loadTextureGli(desc);
 	} else {
 		result = loadTextureFreeimage(desc);
 	}

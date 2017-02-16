@@ -1313,7 +1313,7 @@ void doTextureLoadUi(ShaderParamValue& value, bool forcePickFile)
 	if (ImGui::Button("Browse...") || forcePickFile) {
 		openFileDialog(
 			"Select an image",
-			"Image Files\0*.bmp;*.cut;*.dds;*.exr;*.g3;*.gif;*.hdr;*.ico;*.iff;*.lbm;*.j2k;*.j2c;*.jng;*.jp2;*.jpg;*.jif;*.jpeg;*.jpe;*.jxr;*.wdp;*.hdp;*.koa;*.mng;*.pcd;*.pcx;*.pfm;*.pct;*.pict;*.pic;*.png;*.pbm;*.pgm;*.ppm;*.psd;*.ras;*.sgi;*.rgb;*.rgba;*.bw;*.tga;*.targa;*.tif;*.tiff;*.wap;*.wbmp;*.wbm;*.webp;*.xbm;*.xpm;*.bmp\0",
+			"Image Files\0*.bmp;*.cut;*.dds;*.ktx;*.exr;*.g3;*.gif;*.hdr;*.ico;*.iff;*.lbm;*.j2k;*.j2c;*.jng;*.jp2;*.jpg;*.jif;*.jpeg;*.jpe;*.jxr;*.wdp;*.hdp;*.koa;*.mng;*.pcd;*.pcx;*.pfm;*.pct;*.pict;*.pic;*.png;*.pbm;*.pgm;*.ppm;*.psd;*.ras;*.sgi;*.rgb;*.rgba;*.bw;*.tga;*.targa;*.tif;*.tiff;*.wap;*.wbmp;*.wbm;*.webp;*.xbm;*.xpm;*.bmp\0",
 			&value.textureValue.path);
 	}
 
@@ -2060,20 +2060,32 @@ int main(int, char**)
 				ImGui::Begin("Another Window", &windowOpen, windowFlags);
 				doPassUi(*g_editedPass);
 				ImGui::End();
-			} else if (g_project.m_packages.size() > 0) {
+			}
+
+			if (g_project.m_packages.size() > 0) {
 				Package& package = *g_project.m_packages[0];
 				package.updateGraph();
 				guiGlue.updateInfoFromPackage(package);
-				nodeGraph(package.graph, guiGlue);
 
-				if (guiGlue.triggeredNode.valid()) {
-					g_editedPass = package.m_passes[guiGlue.triggeredNode.idx];
-					// TODO: prevent the GUI editor from appearing for Output nodes
+				if (!g_editedPass) {
+					doNodeGraphGui(package.graph, guiGlue);
+
+					if (guiGlue.triggeredNode.valid()) {
+						g_editedPass = package.m_passes[guiGlue.triggeredNode.idx];
+						// TODO: prevent the GUI editor from appearing for Output nodes
+					}
 				}
 			}
-
+			
 			ImGui::End();
 			ImGui::PopStyleColor();
+		} else {
+			if (g_editedPass) {
+				static bool windowOpen = true;
+				ImGui::Begin(g_editedPass->getDisplayName().c_str(), &windowOpen, 0);
+				doPassUi(*g_editedPass);
+				ImGui::End();
+			}
 		}
 
 		// Rendering

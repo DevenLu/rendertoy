@@ -704,7 +704,7 @@ void resetNodeGraphGui(nodegraph::Graph& graph)
 	g_nodeGraphs.erase(&graph);
 }
 
-void nodeGraph(nodegraph::Graph& graph, INodeGraphGuiGlue& glue)
+void doNodeGraphGui(nodegraph::Graph& graph, INodeGraphGuiGlue& glue)
 {
 	g_nodeGraphs[&graph].doGui(graph, glue);
 }

@@ -170,6 +170,8 @@ static bool parseAnnotation(const char* abegin, const char* aend, ParamAnnotatio
 			}
 
 			annot->items[std::string(tbegin, tend)] = annotValue;
+		} else {
+			return false;
 		}
 	}
 
@@ -230,7 +232,6 @@ static GLuint makeProgram(GLuint computeShader, std::string *const errorLog)
 
 	GLuint program = glCreateProgram();
 	glAttachShader(program, computeShader);
-	glProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
 	glLinkProgram(program);
 	glGetProgramiv(program, GL_LINK_STATUS, &program_ok);
 
@@ -248,7 +249,7 @@ void ComputeShader::reflectParams(const std::unordered_map<std::string, ParamAnn
 {
 	GLint activeUniformCount = 0;
 	glGetProgramiv(m_programHandle, GL_ACTIVE_UNIFORMS, &activeUniformCount);
-	printf("active uniform count: %d\n", activeUniformCount);
+	printf("Active uniform count: %d\n", activeUniformCount);
 
 	m_params.resize(activeUniformCount);
 

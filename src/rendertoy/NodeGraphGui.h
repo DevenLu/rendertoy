@@ -22,4 +22,4 @@ struct INodeGraphGuiGlue {
 };
 
 void resetNodeGraphGui(nodegraph::Graph& graph);
-void nodeGraph(nodegraph::Graph& graph, INodeGraphGuiGlue& infoProvider);
+void doNodeGraphGui(nodegraph::Graph& graph, INodeGraphGuiGlue& infoProvider);
