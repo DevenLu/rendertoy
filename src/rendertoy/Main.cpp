@@ -1893,9 +1893,14 @@ void drawOutputView(const shared_ptr<CreatedTexture>& tex, int width, int height
 {
 	vec2 texSize = vec2(tex->key.width, tex->key.height);
 	vec2 viewSize = vec2(width, height);
+
+	// Move to a space where the window is 1x1 units
 	vec2 texFrac = texSize / viewSize;
 
+	// Expand the image so that the larger of its sides has length 1
 	texFrac /= std::max(texFrac.x, texFrac.y);
+
+	// Move back to pixels and find out how much padding is needed on one of the axes
 	ivec2 padding = ivec2(viewSize * (1.f - texFrac));
 
 	glViewport(padding.x / 2, padding.y / 2, width - padding.x, height - padding.y);
