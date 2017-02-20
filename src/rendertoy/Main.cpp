@@ -82,9 +82,10 @@ struct CompiledPass
 	vector<GLuint> paramLocations;
 	vector<CompiledImage> compiledImages;
 	ShaderParamIterProxy params;
+	ivec2 dispatchSize = ivec2(0, 0);
 	ComputeShader* shader = nullptr;
 
-	void render(u32 width, u32 height)
+	void render()
 	{
 		// TODO: clean up. this is only there for the Output node which doesn't have a shader
 		if (!shader) {
@@ -169,8 +170,8 @@ struct CompiledPass
 		GLint workGroupSize[3];
 		glGetProgramiv(shader->m_programHandle, GL_COMPUTE_WORK_GROUP_SIZE, workGroupSize);
 		glDispatchCompute(
-			(width + workGroupSize[0] - 1) / workGroupSize[0],
-			(height + workGroupSize[1] - 1) / workGroupSize[1],
+			(dispatchSize.x + workGroupSize[0] - 1) / workGroupSize[0],
+			(dispatchSize.y + workGroupSize[1] - 1) / workGroupSize[1],
 			1);
 	}
 };
@@ -336,6 +337,34 @@ void readVec(rapidjson::Value& json, ivec4 *const result)
 	*result = ivec4(v[0].GetInt(), v[1].GetInt(), v[2].GetInt(), v[3].GetInt());
 }
 
+void writeTextureSize(const TextureSize& size, JsonWriter& writer)
+{
+	writer.String("useRelativeScale");
+	writer.Bool(size.useRelativeScale);
+
+	if (size.useRelativeScale) {
+		writer.String("scaleRelativeTo");
+		writer.String(size.scaleRelativeTo.c_str());
+
+		writer.String("relativeScale");
+		writeVec(writer, size.relativeScale);
+	}
+	else {
+		writer.String("resolution");
+		writeVec(writer, size.resolution);
+	}
+}
+
+void readTextureSize(rapidjson::Value& json, TextureSize *const result)
+{
+	if (true == (result->useRelativeScale = json["useRelativeScale"].GetBool())) {
+		result->scaleRelativeTo = json["scaleRelativeTo"].GetString();
+		readVec(json["relativeScale"], &result->relativeScale);
+	}
+	else {
+		readVec(json["resolution"], &result->resolution);
+	}
+}
 
 void serializeShaderParamValue(const ShaderParamValue& value, const ShaderParamRefl& refl, JsonWriter& writer)
 {
@@ -379,22 +408,7 @@ void serializeShaderParamValue(const ShaderParamValue& value, const ShaderParamR
 
 			case TextureDesc::Source::Create: {
 				writer.String("Create");
-
-				writer.String("useRelativeScale");
-				writer.Bool(value.textureValue.useRelativeScale);
-
-				if (value.textureValue.useRelativeScale) {
-					writer.String("scaleRelativeTo");
-					writer.String(value.textureValue.scaleRelativeTo.c_str());
-
-					writer.String("relativeScale");
-					writeVec(writer, value.textureValue.relativeScale);
-				}
-				else {
-					writer.String("resolution");
-					writeVec(writer, value.textureValue.resolution);
-				}
-
+				writeTextureSize(value.textureValue.size, writer);
 				break;
 			}
 
@@ -474,14 +488,7 @@ void deserializeShaderParamValue(rapidjson::Value& json, const ShaderParamRefl& 
 		}
 
 		case TextureDesc::Source::Create: {
-			if (true == (value->textureValue.useRelativeScale = json["useRelativeScale"].GetBool())) {
-				value->textureValue.scaleRelativeTo = json["scaleRelativeTo"].GetString();
-				readVec(json["relativeScale"], &value->textureValue.relativeScale);
-			}
-			else {
-				readVec(json["resolution"], &value->textureValue.resolution);
-			}
-
+			readTextureSize(json, &value->textureValue.size);
 			break;
 		}
 
@@ -549,45 +556,63 @@ protected:
 	}
 };
 
+bool compileTextureSize(
+	const PassCompilerSettings& settings,
+	RenderPass& pass,	// TODO: should be const
+	const CompiledPass& compiledPass,
+	const TextureSize& size,
+	bool allowRelativeToCreated,
+	ivec2 *const res)
+{
+	*res = size.resolution;
+
+	if (size.useRelativeScale) {
+		if (size.scaleRelativeTo == "#window") {
+			res->x = s32(std::max(0.0f, size.relativeScale.x) * settings.windowSize.x);
+			res->y = s32(std::max(0.0f, size.relativeScale.y) * settings.windowSize.y);
+		}
+		else {
+			u32 otherParamIdx = 0;
+			for (const auto& param : pass.params()) {
+				if (param.refl.name == size.scaleRelativeTo) {
+					const bool isImage = param.refl.type == ShaderParamType::Sampler2d || param.refl.type == ShaderParamType::Image2d;
+					const bool isAllowedImage = isImage && (allowRelativeToCreated || param.value.textureValue.source != TextureDesc::Source::Create);
+
+					if (isAllowedImage) {
+						auto& otherImg = compiledPass.compiledImages[otherParamIdx].tex;
+						if (!otherImg) {
+							// TODO: report an error; a required input isn't these, thus we can't compile this graph
+							return false;
+						}
+						res->x = s32(std::max(0.0f, size.relativeScale.x) * otherImg->key.width);
+						res->y = s32(std::max(0.0f, size.relativeScale.y) * otherImg->key.height);
+					}
+					else {
+						// TODO: report an error. can only have scale relative to non-created textures
+					}
+				}
+
+				++otherParamIdx;
+			}
+		}
+	}
+
+	return true;
+}
+
 // Create or load the image
 bool compileImage(const PassCompilerSettings& settings, RenderPass& pass, const TextureDesc& desc, CompiledImage *const compiled, const CompiledPass *const compiledPass)
 {
 	if (desc.source == TextureDesc::Source::Create) {
-		TextureKey key = { 1, 1, GL_RGBA16F };
-		if (desc.useRelativeScale) {
-			if (desc.scaleRelativeTo == "#window") {
-				key.width = u32(std::max(0.0f, desc.relativeScale.x) * settings.windowSize.x);
-				key.height = u32(std::max(0.0f, desc.relativeScale.y) * settings.windowSize.y);
-			} else {
-				u32 otherParamIdx = 0;
-				for (const auto& param : pass.params()) {
-					if (param.refl.name == desc.scaleRelativeTo) {
-						const bool isImage = param.refl.type == ShaderParamType::Sampler2d || param.refl.type == ShaderParamType::Image2d;
-						const bool isInputImage = isImage && param.value.textureValue.source != TextureDesc::Source::Create;
-
-						if (isInputImage) {
-							auto& otherImg = compiledPass->compiledImages[otherParamIdx].tex;
-							if (!otherImg) {
-								// TODO: report an error; a required input isn't these, thus we can't compile this graph
-								return false;
-							}
-							key.width = u32(std::max(0.0f, desc.relativeScale.x) * otherImg->key.width);
-							key.height = u32(std::max(0.0f, desc.relativeScale.y) * otherImg->key.height);
-						} else {
-							// TODO: report an error. can only have scale relative to non-created textures
-						}
-					}
-
-					++otherParamIdx;
-				}
-			}
-		} else {
-			key.width = desc.resolution.x;
-			key.height = desc.resolution.y;
+		ivec2 imgSize;
+		if (!compileTextureSize(settings, pass, *compiledPass, desc.size, false, &imgSize)) {
+			return false;
 		}
 
-		key.width = std::max(1u, key.width);
-		key.height = std::max(1u, key.height);
+		TextureKey key = { 1, 1, GL_RGBA16F };
+
+		key.width = std::max(1, imgSize.x);
+		key.height = std::max(1, imgSize.y);
 
 		compiled->tex = createTransientTexture(desc, key);
 		compiled->owned = true;
@@ -765,6 +790,11 @@ struct ComputePass : RenderPass
 		writer.StartArray();
 		serializeParams(writer);
 		writer.EndArray();
+
+		writer.String("dispatch");
+		writer.StartObject();
+		writeTextureSize(m_dispatchSize, writer);
+		writer.EndObject();
 	}
 
 	void deserialize(rapidjson::Value& json, DeserializationContext& ctx) override
@@ -781,6 +811,10 @@ struct ComputePass : RenderPass
 				updateParams();
 			}
 		});
+
+		if (json.HasMember("dispatch")) {
+			readTextureSize(json["dispatch"], &m_dispatchSize);
+		}
 	}
 
 	void findInvalidParamNameByUid(nodegraph::port_uid uid, std::string *const name) override
@@ -792,6 +826,9 @@ struct ComputePass : RenderPass
 			}
 		}
 	}
+
+
+	TextureSize m_dispatchSize;
 
 private:
 	void deserializeParams(rapidjson::Value& json, DeserializationContext& ctx)
@@ -1211,6 +1248,21 @@ struct Package
 			}
 		}
 
+		// Find dispatch size for compute passes
+		for (const nodegraph::node_idx nodeIdx : passOrder) {
+			RenderPass& renderPass = *m_passes[nodeIdx];
+			ComputePass *const computePass = dynamic_cast<ComputePass*>(&renderPass);
+			if (!computePass) {
+				continue;
+			}
+
+			CompiledPass& compiled = *passToCompiledPass[nodeIdx];
+
+			if (!compileTextureSize(settings, renderPass, compiled, computePass->m_dispatchSize, true, &compiled.dispatchSize)) {
+				return false;
+			}
+		}
+
 		return true;
 	}
 
@@ -1319,6 +1371,64 @@ void doTextureLoadUi(ShaderParamValue& value, bool forcePickFile)
 
 	ImGui::SameLine();
 	ImGui::Text(value.textureValue.path.c_str());
+}
+
+void doTextureSizeGui(TextureSize *const size, RenderPass& pass, bool allowRelativeToCreated)
+{
+	bool relativeSize = size->useRelativeScale;
+	ImGui::Checkbox("relative", &relativeSize);
+	size->useRelativeScale = relativeSize;
+
+	if (relativeSize) {
+		ImGui::PushID("relativeSize");
+		ImGui::PushItemWidth(100);
+		ImGui::SameLine();
+		ImGui::InputFloat2("scale", &size->relativeScale.x, 2);
+		ImGui::SameLine();
+
+		static vector<const char*> targetNames;
+		targetNames = { "#window" };
+
+		int targetIdx = 0;
+
+		for (auto& otherParam : pass.params()) {
+			const bool isTexture = otherParam.refl.type == ShaderParamType::Image2d || otherParam.refl.type == ShaderParamType::Sampler2d;
+			if (isTexture && (otherParam.value.textureValue.source != TextureDesc::Source::Create || allowRelativeToCreated)) {
+				if (otherParam.refl.name == size->scaleRelativeTo) {
+					targetIdx = int(targetNames.size());
+				}
+				targetNames.push_back(otherParam.refl.name.c_str());
+			}
+		}
+
+		int sizeNeeded = 0;
+		for (const char* str : targetNames) {
+			sizeNeeded = std::max(sizeNeeded, (int)ImGui::CalcTextSize(str).x);
+		}
+		sizeNeeded += 32;
+
+		ImGui::PushItemWidth(sizeNeeded);
+		ImGui::SameLine();
+		ImGui::Combo("", &targetIdx, targetNames.data(), targetNames.size());
+		ImGui::PopID();
+
+		size->scaleRelativeTo = targetNames[targetIdx];
+	}
+	else {
+		ImGui::PushItemWidth(100);
+		ImGui::SameLine();
+		ImGui::InputInt2("resolution", &size->resolution.x);
+	}
+}
+
+void doTextureSizeGui(TextureSize *const size, RenderPass& pass)
+{
+	doTextureSizeGui(size, pass, false);
+}
+
+void doDispatchSizeGui(TextureSize *const size, RenderPass& pass)
+{
+	doTextureSizeGui(size, pass, true);
 }
 
 void doPassUi(ComputePass& pass)
@@ -1440,52 +1550,10 @@ void doPassUi(ComputePass& pass)
 
 				ImGui::SameLine();
 				ImGui::PushItemWidth(100);
-				ImGui::Combo("", &formatIdx, formats, sizeof(formats)/sizeof(*formats));
+				ImGui::Combo("", &formatIdx, formats, sizeof(formats) / sizeof(*formats));
 
 				ImGui::SameLine();
-				bool relativeSize = value.textureValue.useRelativeScale;
-				ImGui::Checkbox("relative", &relativeSize);
-				value.textureValue.useRelativeScale = relativeSize;
-
-				if (relativeSize) {
-					ImGui::PushID("relativeSize");
-					ImGui::PushItemWidth(100);
-					ImGui::SameLine();
-					ImGui::InputFloat2("scale", &value.textureValue.relativeScale.x, 2);
-					ImGui::SameLine();
-
-					static vector<const char*> targetNames;
-					targetNames = { "#window" };
-
-					int targetIdx = 0;
-
-					for (auto& otherParam : pass.params()) {
-						const bool isTexture = otherParam.refl.type == ShaderParamType::Image2d || otherParam.refl.type == ShaderParamType::Sampler2d;
-						if (isTexture && otherParam.value.textureValue.source != TextureDesc::Source::Create) {
-							if (otherParam.refl.name == value.textureValue.scaleRelativeTo) {
-								targetIdx = int(targetNames.size());
-							}
-							targetNames.push_back(otherParam.refl.name.c_str());
-						}
-					}
-
-					int sizeNeeded = 0;
-					for (const char* str : targetNames) {
-						sizeNeeded = std::max(sizeNeeded, (int)ImGui::CalcTextSize(str).x);
-					}
-					sizeNeeded += 32;
-
-					ImGui::PushItemWidth(sizeNeeded);
-					ImGui::SameLine();
-					ImGui::Combo("", &targetIdx, targetNames.data(), targetNames.size());
-					ImGui::PopID();
-
-					value.textureValue.scaleRelativeTo = targetNames[targetIdx];
-				} else {
-					ImGui::PushItemWidth(100);
-					ImGui::SameLine();
-					ImGui::InputInt2("resolution", &value.textureValue.resolution.x);
-				}
+				doTextureSizeGui(&value.textureValue.size, pass);
 			}
 
 			ImGui::EndGroup();
@@ -1494,6 +1562,11 @@ void doPassUi(ComputePass& pass)
 		ImGui::Columns(1);
 		ImGui::PopID();
 	}
+
+	ImGui::Dummy(ImVec2(0, 8));
+	ImGui::Text("Dispatch size");
+	ImGui::SameLine();
+	doDispatchSizeGui(&pass.m_dispatchSize, pass);
 
 	if (ImGui::Button("Edit shader")) {
 		shellExecute(pass.shader().m_sourceFile.c_str());
@@ -1921,7 +1994,7 @@ void renderProject(int width, int height)
 		}
 
 		for (auto& pass : compiled.orderedPasses) {
-			int dispatchWidth = width;
+			/*int dispatchWidth = width;
 			int dispatchHeight = height;
 
 			// TODO: proper dispatch size setting
@@ -1932,9 +2005,9 @@ void renderProject(int width, int height)
 					dispatchHeight = img.tex->key.height;
 					break;
 				}
-			}
+			}*/
 
-			pass.render(dispatchWidth, dispatchHeight);
+			pass.render();
 		}
 
 		drawOutputView(compiled.outputTexture, width, height);

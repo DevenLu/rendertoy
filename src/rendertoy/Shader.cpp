@@ -77,16 +77,16 @@ ShaderParamValue ShaderParamRefl::defaultValue() const
 			res.textureValue.source = TextureDesc::Source::Create;
 
 			if (annotation.has("relativeTo")) {
-				res.textureValue.scaleRelativeTo = annotation.get("relativeTo", "");
-				res.textureValue.useRelativeScale = true;
+				res.textureValue.size.scaleRelativeTo = annotation.get("relativeTo", "");
+				res.textureValue.size.useRelativeScale = true;
 
 				if (annotation.has("scale")) {
-					sscanf(annotation.get("scale", ""), "%f %f", &res.textureValue.relativeScale.x, &res.textureValue.relativeScale.y);
+					sscanf(annotation.get("scale", ""), "%f %f", &res.textureValue.size.relativeScale.x, &res.textureValue.size.relativeScale.y);
 				}
 			}
 			else if (annotation.has("size")) {
-				sscanf(annotation.get("size", ""), "%u %u", &res.textureValue.resolution.x, &res.textureValue.resolution.y);
-				res.textureValue.useRelativeScale = false;
+				sscanf(annotation.get("size", ""), "%u %u", &res.textureValue.size.resolution.x, &res.textureValue.size.resolution.y);
+				res.textureValue.size.useRelativeScale = false;
 			}
 		}
 	}

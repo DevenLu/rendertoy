@@ -6,14 +6,18 @@
 #include <unordered_map>
 
 
+struct TextureSize
+{
+	ivec2 resolution = ivec2(1, 1);
+	vec2 relativeScale = vec2(1, 1);
+	std::string scaleRelativeTo = "#window";
+	bool useRelativeScale = true;
+};
+
 struct TextureDesc {
 	TextureDesc()
 		: wrapS(true)
 		, wrapT(true)
-		, useRelativeScale(true)
-		, relativeScale(1, 1)
-		, resolution(1280, 720)
-		, scaleRelativeTo("#window")
 	{}
 
 	enum class Source {
@@ -24,12 +28,9 @@ struct TextureDesc {
 
 	std::string path;
 	Source source = Source::Input;
-	std::string scaleRelativeTo;
-	vec2 relativeScale;
-	ivec2 resolution;
+	TextureSize size;
 	bool wrapS : 1;
 	bool wrapT : 1;
-	bool useRelativeScale : 1;
 };
 
 struct TextureKey {
