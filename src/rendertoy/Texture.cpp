@@ -10,6 +10,31 @@
 
 std::unordered_map<std::string, shared_ptr<CreatedTexture>> g_loadedTextures;
 
+
+bool parseTextureFormat(const char* const str, TextureFormat *const res)
+{
+	for (int fmt = 0; fmt < int(TextureFormat::Count); ++fmt) {
+		if (0 == strcmp(str, textureFormatToString(TextureFormat(fmt)))) {
+			*res = TextureFormat(fmt);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+TextureFormat parseTextureFormat(const char* const str)
+{
+	TextureFormat res;
+	if (parseTextureFormat(str, &res)) {
+		return res;
+	}
+
+	assert(false);
+	return TextureFormat::rgba16f;
+}
+
 CreatedTexture::~CreatedTexture()
 {
 	if (texId != 0) glDeleteTextures(1, &texId);
@@ -131,7 +156,7 @@ shared_ptr<CreatedTexture> loadTextureGli(const TextureDesc& desc)
 	}
 
 	// TODO: is this needed?
-	//image = gli::flip(image);
+	image = gli::flip(image);
 
 	gli::gl GL(gli::gl::PROFILE_GL33);
 	gli::gl::format const format = GL.translate(image.format(), image.swizzles());

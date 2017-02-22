@@ -25,6 +25,27 @@ vector<char> loadShaderSource(const std::string& path, const char* preprocessorO
 	return result;
 }
 
+bool parseTextureSizeAnnotations(const ParamAnnotation& annotation, TextureSize *const res)
+{
+	if (annotation.has("relativeTo")) {
+		res->scaleRelativeTo = annotation.get("relativeTo", "");
+		res->useRelativeScale = true;
+
+		if (annotation.has("scale")) {
+			sscanf(annotation.get("scale", ""), "%f %f", &res->relativeScale.x, &res->relativeScale.y);
+		}
+
+		return true;
+	}
+	else if (annotation.has("size")) {
+		sscanf(annotation.get("size", ""), "%u %u", &res->resolution.x, &res->resolution.y);
+		res->useRelativeScale = false;
+		return true;
+	}
+
+	return false;
+}
+
 ShaderParamValue ShaderParamRefl::defaultValue() const
 {
 	ShaderParamValue res;
@@ -75,18 +96,10 @@ ShaderParamValue ShaderParamRefl::defaultValue() const
 		}
 		else {
 			res.textureValue.source = TextureDesc::Source::Create;
+			parseTextureSizeAnnotations(annotation, &res.textureValue.size);
 
-			if (annotation.has("relativeTo")) {
-				res.textureValue.size.scaleRelativeTo = annotation.get("relativeTo", "");
-				res.textureValue.size.useRelativeScale = true;
-
-				if (annotation.has("scale")) {
-					sscanf(annotation.get("scale", ""), "%f %f", &res.textureValue.size.relativeScale.x, &res.textureValue.size.relativeScale.y);
-				}
-			}
-			else if (annotation.has("size")) {
-				sscanf(annotation.get("size", ""), "%u %u", &res.textureValue.size.resolution.x, &res.textureValue.size.resolution.y);
-				res.textureValue.size.useRelativeScale = false;
+			if (annotation.has("format")) {
+				parseTextureFormat(annotation.get("format", ""), &res.textureValue.createFormat);
 			}
 		}
 	}
@@ -107,6 +120,8 @@ static ShaderParamType parseShaderType(GLenum type, GLint size)
 		{ GL_INT_VEC4, ShaderParamType::Int4 },
 		{ GL_SAMPLER_2D, ShaderParamType::Sampler2d },
 		{ GL_IMAGE_2D, ShaderParamType::Image2d },
+		{ GL_INT_IMAGE_2D, ShaderParamType::Image2d },
+		{ GL_UNSIGNED_INT_IMAGE_2D, ShaderParamType::Image2d },
 	};
 
 	auto it = tmap.find(type);
@@ -245,7 +260,7 @@ static GLuint makeProgram(GLuint computeShader, std::string *const errorLog)
 }
 
 
-void ComputeShader::reflectParams(const std::unordered_map<std::string, ParamAnnotation>& annotations)
+void ComputeShader::reflectParams(const ComputeShader::AnnotationMap& annotations)
 {
 	GLint activeUniformCount = 0;
 	glGetProgramiv(m_programHandle, GL_ACTIVE_UNIFORMS, &activeUniformCount);
@@ -291,6 +306,18 @@ void ComputeShader::reflectParams(const std::unordered_map<std::string, ParamAnn
 		}),
 		m_params.end()
 	);
+}
+
+void ComputeShader::initializeDefaultDispatchSize(const ComputeShader::AnnotationMap& annotations)
+{
+	m_hasDefaultDispatchSize = false;
+
+	auto it = annotations.find("in");
+	if (it != annotations.end()) {
+		if (parseTextureSizeAnnotations(it->second, &m_defaultDispatchSize)) {
+			m_hasDefaultDispatchSize = true;
+		}
+	}
 }
 
 std::unordered_map<std::string, ParamAnnotation> ComputeShader::parseAnnotations(const vector<char>& source)
@@ -389,5 +416,7 @@ bool ComputeShader::reload()
 
 	auto annotations = parseAnnotations(source);
 	reflectParams(annotations);
+	initializeDefaultDispatchSize(annotations);
+
 	return true;
 }

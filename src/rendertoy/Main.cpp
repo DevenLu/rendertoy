@@ -64,6 +64,7 @@ struct CompiledImage
 {
 	shared_ptr<CreatedTexture> tex;
 	bool owned = false;
+	bool clear = false;
 
 	bool valid() const {
 		return tex && tex->texId != 0;
@@ -73,6 +74,7 @@ struct CompiledImage
 		g_transientTextureCache[tex->key] = tex;
 		tex = nullptr;
 		owned = false;
+		clear = false;
 	}
 };
 
@@ -85,12 +87,49 @@ struct CompiledPass
 	ivec2 dispatchSize = ivec2(0, 0);
 	ComputeShader* shader = nullptr;
 
+	void clearImages()
+	{
+		for (const auto& param : params) {
+			const auto& refl = param.refl;
+			const auto& value = param.value;
+
+			if (-1 == refl.location) {
+				continue;
+			}
+
+			if (refl.type == ShaderParamType::Image2d) {
+				CompiledImage& img = compiledImages[param.idx];
+				if (img.valid() && img.clear) {
+					static ComputeShader clearFloat("data/std/clearFloat.glsl");
+					static ComputeShader clearUint("data/std/clearUint.glsl");
+
+					// HACK
+					ComputeShader& sh = (img.tex->key.format == GL_RGBA16F) ? clearFloat : clearUint;
+
+					glUseProgram(sh.m_programHandle);
+					const GLenum layered = GL_FALSE;
+					glBindImageTexture(0, img.tex->texId, 0, layered, 0, GL_WRITE_ONLY, img.tex->key.format);
+					glUniform1i(glGetUniformLocation(sh.m_programHandle, "outputImage"), 0);
+
+					GLint workGroupSize[3];
+					glGetProgramiv(sh.m_programHandle, GL_COMPUTE_WORK_GROUP_SIZE, workGroupSize);
+					glDispatchCompute(
+						(img.tex->key.width + workGroupSize[0] - 1) / workGroupSize[0],
+						(img.tex->key.height + workGroupSize[1] - 1) / workGroupSize[1],
+						1);
+				}
+			}
+		}
+	}
+
 	void render()
 	{
 		// TODO: clean up. this is only there for the Output node which doesn't have a shader
 		if (!shader) {
 			return;
 		}
+
+		clearImages();
 
 		glUseProgram(shader->m_programHandle);
 		u32 imgUnit = 0;
@@ -133,7 +172,7 @@ struct CompiledPass
 				if (img.valid()) {
 					const GLint level = 0;
 					const GLenum layered = GL_FALSE;
-					glBindImageTexture(imgUnit, img.tex->texId, level, layered, 0, GL_READ_ONLY, GL_RGBA16F);
+					glBindImageTexture(imgUnit, img.tex->texId, level, layered, 0, GL_READ_WRITE, img.tex->key.format);
 					glUniform1i(refl.location, imgUnit);
 					++imgUnit;
 				}
@@ -409,6 +448,9 @@ void serializeShaderParamValue(const ShaderParamValue& value, const ShaderParamR
 			case TextureDesc::Source::Create: {
 				writer.String("Create");
 				writeTextureSize(value.textureValue.size, writer);
+
+				writer.String("createFormat");
+				writer.String(textureFormatToString(value.textureValue.createFormat));
 				break;
 			}
 
@@ -489,6 +531,9 @@ void deserializeShaderParamValue(rapidjson::Value& json, const ShaderParamRefl& 
 
 		case TextureDesc::Source::Create: {
 			readTextureSize(json, &value->textureValue.size);
+			if (json.HasMember("createFormat")) {
+				parseTextureFormat(json["createFormat"].GetString(), &value->textureValue.createFormat);
+			}
 			break;
 		}
 
@@ -600,6 +645,14 @@ bool compileTextureSize(
 	return true;
 }
 
+inline unsigned int textureFormatToGl(TextureFormat fmt) {
+	switch (fmt) {
+	case TextureFormat::rgba16f: return GL_RGBA16F;
+	case TextureFormat::r32ui: return GL_R32UI;
+	default: assert(false); return GL_RGBA16F;
+	}
+}
+
 // Create or load the image
 bool compileImage(const PassCompilerSettings& settings, RenderPass& pass, const TextureDesc& desc, CompiledImage *const compiled, const CompiledPass *const compiledPass)
 {
@@ -609,13 +662,14 @@ bool compileImage(const PassCompilerSettings& settings, RenderPass& pass, const 
 			return false;
 		}
 
-		TextureKey key = { 1, 1, GL_RGBA16F };
+		TextureKey key = { 1, 1, textureFormatToGl(desc.createFormat) };
 
 		key.width = std::max(1, imgSize.x);
 		key.height = std::max(1, imgSize.y);
 
 		compiled->tex = createTransientTexture(desc, key);
 		compiled->owned = true;
+		compiled->clear = true;	// TODO: initial state handling
 	}
 	else if (desc.source == TextureDesc::Source::Load) {
 		compiled->tex = loadTexture(desc);
@@ -1258,6 +1312,10 @@ struct Package
 
 			CompiledPass& compiled = *passToCompiledPass[nodeIdx];
 
+			if (computePass->shader().m_hasDefaultDispatchSize) {
+				computePass->m_dispatchSize = computePass->shader().m_defaultDispatchSize;
+			}
+
 			if (!compileTextureSize(settings, renderPass, compiled, computePass->m_dispatchSize, true, &compiled.dispatchSize)) {
 				return false;
 			}
@@ -1431,6 +1489,134 @@ void doDispatchSizeGui(TextureSize *const size, RenderPass& pass)
 	doTextureSizeGui(size, pass, true);
 }
 
+void doPassParamUi(ShaderParamProxy& param, ComputePass& pass)
+{
+	const auto& refl = param.refl;
+	auto& value = param.value;
+
+	if (refl.type == ShaderParamType::Float) {
+		ImGui::SliderFloat("", &value.floatValue, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
+	}
+	else if (refl.type == ShaderParamType::Float2) {
+		ImGui::SliderFloat2("", &value.float2Value.x, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
+	}
+	else if (refl.type == ShaderParamType::Float3) {
+		if (refl.annotation.has("color")) {
+			ImGui::ColorEdit3("", &value.float3Value.x);
+		}
+		else {
+			ImGui::SliderFloat3("", &value.float3Value.x, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
+		}
+	}
+	else if (refl.type == ShaderParamType::Float4) {
+		if (refl.annotation.has("color")) {
+			ImGui::ColorEdit4("", &value.float4Value.x);
+		}
+		else {
+			ImGui::SliderFloat4("", &value.float4Value.x, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
+		}
+	}
+	else if (refl.type == ShaderParamType::Int) {
+		ImGui::SliderInt("", &value.intValue, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
+	}
+	else if (refl.type == ShaderParamType::Int2) {
+		ImGui::SliderInt2("", &value.int2Value.x, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
+	}
+	else if (refl.type == ShaderParamType::Int3) {
+		ImGui::SliderInt3("", &value.int3Value.x, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
+	}
+	else if (refl.type == ShaderParamType::Int4) {
+		ImGui::SliderInt4("", &value.int4Value.x, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
+	}
+	else if (refl.type == ShaderParamType::Sampler2d) {
+		int sourceIdx = TextureDesc::Source::Load == value.textureValue.source ? 0 : 1;
+		const char* const sources[] = {
+			"Load",
+			"Input",
+		};
+		ImGui::PushID("source");
+		ImGui::PushItemWidth(100);
+		bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
+		ImGui::PopID();
+		value.textureValue.source = 0 == sourceIdx ? TextureDesc::Source::Load : TextureDesc::Source::Input;
+
+		ImGui::SameLine();
+
+		{
+			ImGui::PushID("wrapS");
+			int wrapS = value.textureValue.wrapS ? 0 : 1;
+			const char* const wrapSValues[] = {
+				"Wrap S",
+				"Clamp S",
+			};
+			ImGui::PushItemWidth(100);
+			ImGui::Combo("", &wrapS, wrapSValues, sizeof(wrapSValues) / sizeof(*wrapSValues));
+			value.textureValue.wrapS = !wrapS;
+			ImGui::PopID();
+		}
+
+		ImGui::SameLine();
+
+		{
+			ImGui::PushID("wrapT");
+			int wrapT = value.textureValue.wrapT ? 0 : 1;
+			const char* const wrapTValues[] = {
+				"Wrap T",
+				"Clamp T",
+			};
+			ImGui::PushItemWidth(100);
+			ImGui::Combo("", &wrapT, wrapTValues, sizeof(wrapTValues) / sizeof(*wrapTValues));
+			value.textureValue.wrapT = !wrapT;
+			ImGui::PopID();
+		}
+
+		if (TextureDesc::Source::Load == value.textureValue.source) {
+			ImGui::SameLine();
+			doTextureLoadUi(value, sourceJustSelected);
+		}
+	}
+	else if (refl.type == ShaderParamType::Image2d) {
+		ImGui::BeginGroup();
+		int sourceIdx = int(value.textureValue.source);
+		const char* const sources[] = {
+			"Load",
+			"Create",
+			"Input",
+		};
+		ImGui::PushID("source");
+		ImGui::PushItemWidth(100);
+		bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
+		ImGui::PopID();
+		value.textureValue.source = TextureDesc::Source(sourceIdx);
+
+		if (TextureDesc::Source::Load == value.textureValue.source) {
+			ImGui::SameLine();
+			doTextureLoadUi(value, sourceJustSelected);
+		}
+		else if (TextureDesc::Source::Create == value.textureValue.source) {
+			int formatIdx = int(value.textureValue.createFormat);
+
+			static vector<const char*> textureFormats;
+			if (textureFormats.empty()) {
+				for (int fmt = 0; fmt < int(TextureFormat::Count); ++fmt) {
+					textureFormats.push_back(textureFormatToString(TextureFormat(fmt)));
+				}
+			}
+
+			ImGui::SameLine();
+			ImGui::PushItemWidth(100);
+			ImGui::Combo("", &formatIdx, textureFormats.data(), textureFormats.size());
+
+			value.textureValue.createFormat = TextureFormat(formatIdx);
+
+			ImGui::SameLine();
+			doTextureSizeGui(&value.textureValue.size, pass);
+		}
+
+		ImGui::EndGroup();
+	}
+}
+
 void doPassUi(ComputePass& pass)
 {
 	int maxLabelWidth = 0;
@@ -1439,134 +1625,33 @@ void doPassUi(ComputePass& pass)
 	}
 	maxLabelWidth += 10;
 
-	for (auto& param : pass.params()) {
-		const auto& refl = param.refl;
-		auto& value = param.value;
+	ImGui::Columns(2, nullptr, false);
 
-		ImGui::PushID(refl.name.c_str());
-		ImGui::Columns(2);
+	for (auto& param : pass.params()) {
+		ImGui::PushID(param.refl.name.c_str());
 		{
-			const int textWidth = (int)ImGui::CalcTextSize(refl.name.c_str()).x;
+			const int textWidth = (int)ImGui::CalcTextSize(param.refl.name.c_str()).x;
 			ImGui::SetCursorPosX(maxLabelWidth - textWidth);
-			ImGui::Text(refl.name.c_str());
+			ImGui::Text(param.refl.name.c_str());
 		}
 
 		ImGui::SetColumnOffset(1, maxLabelWidth + 10);
 		ImGui::NextColumn();
 
-		if (refl.type == ShaderParamType::Float) {
-			ImGui::SliderFloat("", &value.floatValue, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
-		} else if (refl.type == ShaderParamType::Float2) {
-			ImGui::SliderFloat2("", &value.float2Value.x, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
-		} else if (refl.type == ShaderParamType::Float3) {
-			if (refl.annotation.has("color")) {
-				ImGui::ColorEdit3("", &value.float3Value.x);
-			} else {
-				ImGui::SliderFloat3("", &value.float3Value.x, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
-			}
-		} else if (refl.type == ShaderParamType::Float4) {
-			if (refl.annotation.has("color")) {
-				ImGui::ColorEdit4("", &value.float4Value.x);
-			} else {
-				ImGui::SliderFloat4("", &value.float4Value.x, refl.annotation.get("min", 0.0f), refl.annotation.get("max", 1.0f));
-			}
-		} else if (refl.type == ShaderParamType::Int) {
-			ImGui::SliderInt("", &value.intValue, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
-		} else if (refl.type == ShaderParamType::Int2) {
-			ImGui::SliderInt2("", &value.int2Value.x, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
-		} else if (refl.type == ShaderParamType::Int3) {
-			ImGui::SliderInt3("", &value.int3Value.x, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
-		} else if (refl.type == ShaderParamType::Int4) {
-			ImGui::SliderInt4("", &value.int4Value.x, refl.annotation.get("min", 0), refl.annotation.get("max", 16));
-		} else if (refl.type == ShaderParamType::Sampler2d) {
-			int sourceIdx = TextureDesc::Source::Load == value.textureValue.source ? 0 : 1;
-			const char* const sources[] = {
-				"Load",
-				"Input",
-			};
-			ImGui::PushID("source");
-			ImGui::PushItemWidth(100);
-			bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
-			ImGui::PopID();
-			value.textureValue.source = 0 == sourceIdx ? TextureDesc::Source::Load : TextureDesc::Source::Input;
+		doPassParamUi(param, pass);
 
-			ImGui::SameLine();
-
-			{
-				ImGui::PushID("wrapS");
-				int wrapS = value.textureValue.wrapS ? 0 : 1;
-				const char* const wrapSValues[] = {
-					"Wrap S",
-					"Clamp S",
-				};
-				ImGui::PushItemWidth(100);
-				ImGui::Combo("", &wrapS, wrapSValues, sizeof(wrapSValues) / sizeof(*wrapSValues));
-				value.textureValue.wrapS = !wrapS;
-				ImGui::PopID();
-			}
-
-			ImGui::SameLine();
-
-			{
-				ImGui::PushID("wrapT");
-				int wrapT = value.textureValue.wrapT ? 0 : 1;
-				const char* const wrapTValues[] = {
-					"Wrap T",
-					"Clamp T",
-				};
-				ImGui::PushItemWidth(100);
-				ImGui::Combo("", &wrapT, wrapTValues, sizeof(wrapTValues) / sizeof(*wrapTValues));
-				value.textureValue.wrapT = !wrapT;
-				ImGui::PopID();
-			}
-
-			if (TextureDesc::Source::Load == value.textureValue.source) {
-				ImGui::SameLine();
-				doTextureLoadUi(value, sourceJustSelected);
-			}
-		} else if (refl.type == ShaderParamType::Image2d) {
-			ImGui::BeginGroup();
-			int sourceIdx = int(value.textureValue.source);
-			const char* const sources[] = {
-				"Load",
-				"Create",
-				"Input",
-			};
-			ImGui::PushID("source");
-			ImGui::PushItemWidth(100);
-			bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
-			ImGui::PopID();
-			value.textureValue.source = TextureDesc::Source(sourceIdx);
-
-			if (TextureDesc::Source::Load == value.textureValue.source) {
-				ImGui::SameLine();
-				doTextureLoadUi(value, sourceJustSelected);
-			} else if (TextureDesc::Source::Create == value.textureValue.source) {
-				int formatIdx = 0;
-				const char* const formats[] = {
-					"rgba16f",
-					"r11g11b10f",
-				};
-
-				ImGui::SameLine();
-				ImGui::PushItemWidth(100);
-				ImGui::Combo("", &formatIdx, formats, sizeof(formats) / sizeof(*formats));
-
-				ImGui::SameLine();
-				doTextureSizeGui(&value.textureValue.size, pass);
-			}
-
-			ImGui::EndGroup();
-		}
-
-		ImGui::Columns(1);
 		ImGui::PopID();
+		ImGui::NextColumn();
 	}
 
-	ImGui::Dummy(ImVec2(0, 8));
-	ImGui::Text("Dispatch size");
-	ImGui::SameLine();
-	doDispatchSizeGui(&pass.m_dispatchSize, pass);
+	ImGui::Columns(1);
+
+	if (!pass.shader().m_hasDefaultDispatchSize) {
+		ImGui::Dummy(ImVec2(0, 8));
+		ImGui::Text("Dispatch size");
+		ImGui::SameLine();
+		doDispatchSizeGui(&pass.m_dispatchSize, pass);
+	}
 
 	if (ImGui::Button("Edit shader")) {
 		shellExecute(pass.shader().m_sourceFile.c_str());

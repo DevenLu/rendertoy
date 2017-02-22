@@ -112,17 +112,14 @@ struct ComputeShader
 	std::string m_sourceFile;
 	std::string m_errorLog;
 
+	TextureSize m_defaultDispatchSize;
+	bool m_hasDefaultDispatchSize = false;
+
 	unsigned int m_csHandle = -1;
 	unsigned int m_programHandle = -1;
 
 	// incremented every time the shader is dynamically reloaded
 	u32 versionId = 0;
-
-	void reflectParams(const std::unordered_map<std::string, ParamAnnotation>& annotations);
-
-	std::unordered_map<std::string, ParamAnnotation> parseAnnotations(const std::vector<char>& source);
-
-	void updateErrorLogFile();
 
 	bool reload();
 
@@ -132,6 +129,14 @@ struct ComputeShader
 	{
 		reload();
 	}
+
+private:
+	typedef std::unordered_map<std::string, ParamAnnotation> AnnotationMap;
+
+	std::unordered_map<std::string, ParamAnnotation> parseAnnotations(const std::vector<char>& source);
+	void reflectParams(const AnnotationMap& annotations);
+	void initializeDefaultDispatchSize(const AnnotationMap& annotations);
+	void updateErrorLogFile();
 };
 
 struct ShaderParamProxy {

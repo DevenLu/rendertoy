@@ -14,6 +14,23 @@ struct TextureSize
 	bool useRelativeScale = true;
 };
 
+enum class TextureFormat {
+	rgba16f,
+	r32ui,
+	Count,
+};
+
+inline const char* const textureFormatToString(TextureFormat fmt) {
+	switch (fmt) {
+	case TextureFormat::rgba16f: return "rgba16f";
+	case TextureFormat::r32ui: return "r32ui";
+	default: return nullptr;
+	}
+}
+
+bool parseTextureFormat(const char* const str, TextureFormat *const res);
+TextureFormat parseTextureFormat(const char* const str);
+
 struct TextureDesc {
 	TextureDesc()
 		: wrapS(true)
@@ -28,6 +45,7 @@ struct TextureDesc {
 
 	std::string path;
 	Source source = Source::Input;
+	TextureFormat createFormat = TextureFormat::rgba16f;
 	TextureSize size;
 	bool wrapS : 1;
 	bool wrapT : 1;
