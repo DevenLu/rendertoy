@@ -66,7 +66,23 @@ enum class ShaderParamType {
 	Int4,
 	Sampler2d,
 	Image2d,
+	Buffer,
 	Unknown,
+};
+
+struct BufferSize {
+	u32 baseSizeBytes = 0;
+	u32 tailArrayStrideBytes = 0;
+};
+
+struct BufferDesc {
+	enum class Source {
+		Create,
+		Input
+	};
+
+	TextureSize size;	// tailArraySize
+	Source source = Source::Input;
 };
 
 struct ShaderParamValue {
@@ -87,10 +103,12 @@ struct ShaderParamValue {
 	};
 
 	TextureDesc textureValue;
+	BufferDesc bufferValue;
 
 	void assign(ShaderParamType type, const ShaderParamValue& other) {
 		float4Value = other.float4Value;
 		textureValue = other.textureValue;
+		bufferValue = other.bufferValue;
 	}
 };
 
@@ -98,7 +116,7 @@ struct ShaderParamRefl {
 	std::string name;
 	ShaderParamType type;
 	ParamAnnotation annotation;
-
+	BufferSize bufferSize;
 	ShaderParamValue defaultValue() const;
 };
 

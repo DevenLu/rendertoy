@@ -262,27 +262,105 @@ static GLuint makeProgram(GLuint computeShader, std::string *const errorLog)
 
 void ComputeShader::reflectParams(const ComputeShader::AnnotationMap& annotations)
 {
-	GLint activeUniformCount = 0;
-	glGetProgramiv(m_programHandle, GL_ACTIVE_UNIFORMS, &activeUniformCount);
-	printf("Active uniform count: %d\n", activeUniformCount);
+	{
+		GLint activeUniformCount = 0;
+		glGetProgramiv(m_programHandle, GL_ACTIVE_UNIFORMS, &activeUniformCount);
+		printf("Active uniform count: %d\n", activeUniformCount);
 
-	m_params.resize(activeUniformCount);
+		m_params.resize(activeUniformCount);
 
-	char name[1024];
-	for (GLint loc = 0; loc < activeUniformCount; ++loc) {
-		GLsizei nameLength = 0;
-		GLenum typeGl;
-		GLint size;
-		glGetActiveUniform(m_programHandle, loc, sizeof(name), &nameLength, &size, &typeGl, name);
+		char name[1024];
+		for (GLint loc = 0; loc < activeUniformCount; ++loc) {
+			GLsizei nameLength = 0;
+			GLenum typeGl;
+			GLint size;
+			glGetActiveUniform(m_programHandle, loc, sizeof(name), &nameLength, &size, &typeGl, name);
 
-		ShaderParamBindingRefl& param = m_params[loc];
-		param.location = loc;
-		param.name = name;
-		param.type = parseShaderType(typeGl, size);
+			ShaderParamBindingRefl& param = m_params[loc];
+			param.location = loc;
+			param.name = name;
+			param.type = parseShaderType(typeGl, size);
 
-		auto it = annotations.find(name);
-		if (it != annotations.end()) {
-			param.annotation = it->second;
+			auto it = annotations.find(name);
+			if (it != annotations.end()) {
+				param.annotation = it->second;
+			}
+		}
+	}
+
+	{
+		GLint shaderStorageBlockCount = 0;
+		glGetProgramInterfaceiv(m_programHandle, GL_SHADER_STORAGE_BLOCK, GL_ACTIVE_RESOURCES, &shaderStorageBlockCount);
+		printf("shaderStorageBlockCount = %d\n", shaderStorageBlockCount);
+
+		for (GLint bufferIdx = 0; bufferIdx < shaderStorageBlockCount; ++bufferIdx) {
+			char name[1024];
+			GLsizei nameLength = 0, propArrayLength;
+			glGetProgramResourceName(m_programHandle, GL_SHADER_STORAGE_BLOCK, bufferIdx, sizeof(name), &nameLength, name);
+
+			struct {
+				GLint activeVariableCount = 0;
+				GLint bufferDataSize = 0;
+				GLint bufferBiniding;
+			} props;
+
+			{
+				GLenum propNames[] = {
+					GL_NUM_ACTIVE_VARIABLES,
+					GL_BUFFER_DATA_SIZE,
+					GL_BUFFER_BINDING,
+				};
+				const auto propCount = sizeof(propNames) / sizeof(*propNames);
+				glGetProgramResourceiv(m_programHandle, GL_SHADER_STORAGE_BLOCK, bufferIdx, propCount, propNames, propCount, &propArrayLength, (GLint*)&props);
+			}
+
+			vector<GLint> variableIndices(props.activeVariableCount);
+			{
+				GLenum propName = GL_ACTIVE_VARIABLES;
+				glGetProgramResourceiv(m_programHandle, GL_SHADER_STORAGE_BLOCK, bufferIdx, 1, &propName, variableIndices.size(), &propArrayLength, variableIndices.data());
+			}
+
+			printf("Buffer %s active vars: %d data size: %d\n", name, props.activeVariableCount, props.bufferDataSize);
+
+			BufferSize bufferSize;
+			bufferSize.baseSizeBytes = props.bufferDataSize;
+
+			for (GLint varIdx = 0; varIdx < props.activeVariableCount; ++varIdx) {
+				struct {
+					GLint arraySize = 0;
+					GLint arrayStride = 0;
+					GLint offset = 0;
+				} varProps;
+
+				{
+					GLenum propNames[] = {
+						GL_ARRAY_SIZE,
+						GL_ARRAY_STRIDE,
+						GL_OFFSET,
+					};
+					const auto propCount = sizeof(propNames) / sizeof(*propNames);
+					glGetProgramResourceiv(m_programHandle, GL_BUFFER_VARIABLE, variableIndices[varIdx], propCount, propNames, propCount, &propArrayLength, (GLint*)&varProps);
+				}
+
+				char varName[1024];
+				glGetProgramResourceName(m_programHandle, GL_BUFFER_VARIABLE, variableIndices[varIdx], sizeof(varName), &nameLength, varName);
+
+				printf("    variable %s array size %d stride %d\n", varName, varProps.arraySize, varProps.arrayStride);
+
+				if (0 == varProps.arraySize) {
+					// Unsized array, last in the buffer. With the array sized zero, the buffer
+					// must be large enough to hold everything up to varProps.offset.
+					bufferSize.baseSizeBytes = varProps.offset;
+					bufferSize.tailArrayStrideBytes = varProps.arrayStride;
+				}
+			}
+
+			m_params.push_back(ShaderParamBindingRefl());
+			ShaderParamBindingRefl& param = m_params.back();
+			param.location = props.bufferBiniding;
+			param.name = name;
+			param.type = ShaderParamType::Buffer;
+			param.bufferSize = bufferSize;
 		}
 	}
 

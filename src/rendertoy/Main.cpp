@@ -31,6 +31,14 @@ struct RenderPass;
 std::shared_ptr<RenderPass> g_editedPass = nullptr;
 
 
+struct BufferKey {
+	u32 sizeBytes;
+
+	bool operator==(const BufferKey& other) const {
+		return sizeBytes == other.sizeBytes;
+	}
+};
+
 
 namespace std {
 	template <>
@@ -41,6 +49,16 @@ namespace std {
 			res = res * 31u + hash<u32>()(k.width);
 			res = res * 31u + hash<u32>()(k.height);
 			res = res * 31u + hash<GLenum>()(k.format);
+			return res;
+		}
+	};
+
+	template <>
+	struct hash<BufferKey>
+	{
+		size_t operator()(const BufferKey& k) const {
+			size_t res = 17;
+			res = res * 31u + hash<u32>()(k.sizeBytes);
 			return res;
 		}
 	};
@@ -58,7 +76,6 @@ namespace std {
 
 
 std::unordered_map<TextureKey, shared_ptr<CreatedTexture>> g_transientTextureCache;
-
 
 struct CompiledImage
 {
@@ -79,10 +96,39 @@ struct CompiledImage
 };
 
 
+struct CreatedBuffer {
+	unsigned int id = 0;			// GLuint
+	BufferKey key;
+
+	~CreatedBuffer() {
+		if (id != 0) glDeleteBuffers(1, &id);
+	}
+};
+
+std::unordered_map<BufferKey, shared_ptr<CreatedBuffer>> g_transientBufferCache;
+
+struct CompiledBuffer
+{
+	shared_ptr<CreatedBuffer> buf;
+	bool owned = false;
+
+	bool valid() const {
+		return buf && buf->id != 0;
+	}
+
+	void release() {
+		g_transientBufferCache[buf->key] = buf;
+		buf = nullptr;
+		owned = false;
+	}
+};
+
+
 struct CompiledPass
 {
 	vector<GLuint> paramLocations;
 	vector<CompiledImage> compiledImages;
+	vector<CompiledBuffer> compiledBuffers;
 	ShaderParamIterProxy params;
 	ivec2 dispatchSize = ivec2(0, 0);
 	ComputeShader* shader = nullptr;
@@ -193,6 +239,12 @@ struct CompiledPass
 					++texUnit;
 				}
 			}
+			else if (refl.type == ShaderParamType::Buffer) {
+				CompiledBuffer& buf = compiledBuffers[param.idx];
+				if (buf.valid()) {
+					glBindBufferBase(GL_SHADER_STORAGE_BUFFER, refl.location, buf.buf->id);
+				}
+			}
 
 			// Upload hardcoded [texname]_size uniform; xy: resolution, zw: 1/resolution
 			if (refl.type == ShaderParamType::Image2d || refl.type == ShaderParamType::Sampler2d) {
@@ -228,6 +280,32 @@ shared_ptr<CreatedTexture> createTransientTexture(const TextureDesc& desc, const
 	}
 }
 
+shared_ptr<CreatedBuffer> createBuffer(const BufferDesc& desc, const BufferKey& key)
+{
+	GLuint id;
+	glGenBuffers(1, &id);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, key.sizeBytes, nullptr, GL_STATIC_COPY);
+	auto res = std::make_shared<CreatedBuffer>();
+	res->key = key;
+	res->id = id;
+	return res;
+}
+
+
+shared_ptr<CreatedBuffer> createTransientBuffer(const BufferDesc& desc, const BufferKey& key)
+{
+	auto existing = g_transientBufferCache.find(key);
+	if (existing != g_transientBufferCache.end()) {
+		auto res = existing->second;
+		g_transientBufferCache.erase(existing);
+		return res;
+	}
+	else {
+		return createBuffer(desc, key);
+	}
+}
+
 
 struct PassCompilerSettings
 {
@@ -253,6 +331,8 @@ const char* const getShaderParamTypeName(ShaderParamType type)
 	case ShaderParamType::Int4: return "Int4";
 	case ShaderParamType::Sampler2d: return "Sampler2d";
 	case ShaderParamType::Image2d: return "Image2d";
+	case ShaderParamType::Buffer: return "Buffer";
+	default: assert(false);
 	}
 
 	return "Unknown";
@@ -270,6 +350,7 @@ ShaderParamType parseShaderParamTypeName(const char* const str)
 	if (0 == strcmp("Int4", str)) return ShaderParamType::Int4;
 	if (0 == strcmp("Sampler2d", str)) return ShaderParamType::Sampler2d;
 	if (0 == strcmp("Image2d", str)) return ShaderParamType::Image2d;
+	if (0 == strcmp("Buffer", str)) return ShaderParamType::Buffer;
 	return ShaderParamType::Unknown;
 }
 
@@ -471,6 +552,26 @@ void serializeShaderParamValue(const ShaderParamValue& value, const ShaderParamR
 		}
 		writer.EndObject();
 	}
+	else if (refl.type == ShaderParamType::Buffer) {
+		writer.StartObject();
+		{
+			writer.String("source");
+
+			switch (value.bufferValue.source) {
+				case BufferDesc::Source::Create: {
+					writer.String("Create");
+					writeTextureSize(value.bufferValue.size, writer);
+					break;
+				}
+
+				case BufferDesc::Source::Input: {
+					writer.String("Input");
+					break;
+				}
+			}
+		}
+		writer.EndObject();
+	}
 	else {
 		assert(false);
 		writer.StartObject();
@@ -553,6 +654,21 @@ void deserializeShaderParamValue(rapidjson::Value& json, const ShaderParamRefl& 
 
 			value->textureValue.wrapS = json["wrapS"].GetBool();
 			value->textureValue.wrapT = json["wrapT"].GetBool();
+		}
+	}
+	else if (refl.type == ShaderParamType::Buffer) {
+		value->bufferValue.source = BufferDesc::Source::Input;
+		if (0 == strcmp("Create", json["source"].GetString())) value->bufferValue.source = BufferDesc::Source::Create;
+
+		switch (value->bufferValue.source) {
+			case BufferDesc::Source::Create: {
+				readTextureSize(json, &value->bufferValue.size);
+				break;
+			}
+
+			case BufferDesc::Source::Input: {
+				break;
+			}
 		}
 	}
 }
@@ -674,6 +790,26 @@ bool compileImage(const PassCompilerSettings& settings, RenderPass& pass, const 
 	else if (desc.source == TextureDesc::Source::Load) {
 		compiled->tex = loadTexture(desc);
 	}
+
+	return true;
+}
+
+bool compileBuffer(const PassCompilerSettings& settings, RenderPass& pass, const BufferSize& sizeDesc, const BufferDesc& desc, CompiledBuffer *const compiled, const CompiledPass *const compiledPass)
+{
+	if (desc.source != BufferDesc::Source::Create) {
+		return true;
+	}
+
+	ivec2 bufSize;
+	if (!compileTextureSize(settings, pass, *compiledPass, desc.size, false, &bufSize)) {
+		return false;
+	}
+
+	BufferKey key = { bufSize.x * bufSize.y * sizeDesc.tailArrayStrideBytes + sizeDesc.baseSizeBytes };
+	key.sizeBytes = std::max(4u, key.sizeBytes);
+
+	compiled->buf = createTransientBuffer(desc, key);
+	compiled->owned = true;
 
 	return true;
 }
@@ -803,6 +939,12 @@ struct ComputePass : RenderPass
 
 			if (m_paramRefl[i].type == ShaderParamType::Image2d && m_paramValues[i].textureValue.source != TextureDesc::Source::Load) {
 				if (!compileImage(settings, *this, m_paramValues[i].textureValue, &compiled->compiledImages[i], compiled)) {
+					return false;
+				}
+			}
+
+			if (m_paramRefl[i].type == ShaderParamType::Buffer) {
+				if (!compileBuffer(settings, *this, m_paramRefl[i].bufferSize, m_paramValues[i].bufferValue, &compiled->compiledBuffers[i], compiled)) {
 					return false;
 				}
 			}
@@ -989,12 +1131,28 @@ private:
 
 bool needsOutputPort(const ShaderParamProxy& param)
 {
-	return param.refl.type == ShaderParamType::Image2d && param.value.textureValue.source == TextureDesc::Source::Create;
+	if (param.refl.type == ShaderParamType::Image2d) {
+		return param.value.textureValue.source == TextureDesc::Source::Create;
+	}
+	else if (param.refl.type == ShaderParamType::Buffer) {
+		return param.value.bufferValue.source == BufferDesc::Source::Create;
+	}
+	else {
+		return false;
+	}	
 }
 
 bool needsInputPort(const ShaderParamProxy& param)
 {
-	return (param.refl.type == ShaderParamType::Image2d || param.refl.type == ShaderParamType::Sampler2d) && param.value.textureValue.source == TextureDesc::Source::Input;
+	if (param.refl.type == ShaderParamType::Image2d || param.refl.type == ShaderParamType::Sampler2d) {
+		return param.value.textureValue.source == TextureDesc::Source::Input;
+	}
+	else if (param.refl.type == ShaderParamType::Buffer) {
+		return param.value.bufferValue.source == BufferDesc::Source::Input;
+	}
+	else {
+		return false;
+	}
 }
 
 void serializeGraph(nodegraph::Graph& graph, JsonWriter& writer)
@@ -1258,7 +1416,10 @@ struct Package
 			passToCompiledPass[nodeIdx] = &dstCompiled;
 
 			dstCompiled.compiledImages.clear();
+			dstCompiled.compiledBuffers.clear();
+
 			dstCompiled.compiledImages.resize(dstPass.params().size());
+			dstCompiled.compiledBuffers.resize(dstPass.params().size());
 
 			bool allInputsBound = true;
 
@@ -1280,6 +1441,7 @@ struct Package
 
 						if (srcParamIdx != -1) {
 							dstCompiled.compiledImages[dstParamIdx].tex = srcCompiled.compiledImages[srcParamIdx].tex;
+							dstCompiled.compiledBuffers[dstParamIdx].buf = srcCompiled.compiledBuffers[srcParamIdx].buf;
 						} else {
 							allInputsBound = false;
 						}
@@ -1475,7 +1637,7 @@ void doTextureSizeGui(TextureSize *const size, RenderPass& pass, bool allowRelat
 	else {
 		ImGui::PushItemWidth(100);
 		ImGui::SameLine();
-		ImGui::InputInt2("resolution", &size->resolution.x);
+		ImGui::InputInt2("dimensions", &size->resolution.x);
 	}
 }
 
@@ -1614,6 +1776,23 @@ void doPassParamUi(ShaderParamProxy& param, ComputePass& pass)
 		}
 
 		ImGui::EndGroup();
+	}
+	else if (refl.type == ShaderParamType::Buffer) {
+		int sourceIdx = int(value.bufferValue.source);
+		const char* const sources[] = {
+			"Create",
+			"Input",
+		};
+		ImGui::PushID("source");
+		ImGui::PushItemWidth(100);
+		bool sourceJustSelected = ImGui::Combo("", &sourceIdx, sources, sizeof(sources) / sizeof(*sources));
+		ImGui::PopID();
+		value.bufferValue.source = BufferDesc::Source(sourceIdx);
+
+		if (BufferDesc::Source::Create == value.bufferValue.source && refl.bufferSize.tailArrayStrideBytes > 0) {
+			ImGui::SameLine();
+			doTextureSizeGui(&value.bufferValue.size, pass);
+		}
 	}
 }
 
@@ -2280,7 +2459,10 @@ int main(int, char**)
 
 		glViewport(0, 0, display_w, display_h);
 		glScissor(0, 0, display_w, display_h);
+
+		glDisable(GL_DEBUG_OUTPUT);
 		ImGui::Render();
+		glEnable(GL_DEBUG_OUTPUT);
 
 		glfwSwapBuffers(window);
 		FileWatcher::update();
