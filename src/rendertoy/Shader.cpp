@@ -224,9 +224,7 @@ static GLuint makeShader(GLenum shaderType, const vector<char>& source, std::str
 	const GLchar* sources[1] = { source.data() };
 	glShaderSource(handle, 1, sources, &sourceLength);
 
-	glDisable(GL_DEBUG_OUTPUT);
 	glCompileShader(handle);
-	glEnable(GL_DEBUG_OUTPUT);
 	{
 		GLint shader_ok;
 		glGetShaderiv(handle, GL_COMPILE_STATUS, &shader_ok);

@@ -2346,6 +2346,7 @@ int main(int, char**)
 
 	glDebugMessageCallback(&openGLDebugCallback, nullptr);
 	glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, 1);
+	glDebugMessageControl(GL_DEBUG_SOURCE_SHADER_COMPILER, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, 0);
 	glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
 
 	// Setup ImGui binding
